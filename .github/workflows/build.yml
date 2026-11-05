@@ -1,0 +1,542 @@
+# Every push: build the signed release APK and check it; run the emulator test; translate public
+# Russian and Japanese clips with the release's model (test-clips/), both by Whisper alone and by
+# Whisper + the language model loaded into the app; and run the phone's arm64 code (Whisper and
+# the language model) under QEMU. A Release is published only when all five pass.
+#
+# Publishing a Release (what the phone installs from): bump app/version.properties, add
+# docs/releases/<versionName>.md, and push a commit whose message contains [release]
+# (or run this workflow by hand with "release" ticked). The APK is uploaded as a draft
+# Release by the build job and published only when every check here has passed.
+name: Build
+
+on:
+  push:
+    # main only: a working branch carries the same commits, so running both would duplicate every
+    # run. Run it by hand for a branch.
+    branches: [main]
+    # A release always changes app/version.properties, so it always builds.
+    # Notes, and the manual test and comparison tools, do not change the APK.
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "scripts/find-test-clips.py"
+      - ".github/workflows/find-test-clips.yml"
+      - ".github/workflows/compare-models.yml"
+      - ".github/workflows/experiment-*.yml"
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Publish a Release if every check passes
+        type: boolean
+        default: false
+      full:
+        description: Also run the long checks (translation, language model, ARM) without releasing
+        type: boolean
+        default: false
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: Release APK (arm64, signed, no network permission)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+      draft_id: ${{ steps.draft.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Version, and whether this run publishes
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          DISPATCH_RELEASE: ${{ github.event.inputs.release }}
+        run: |
+          version="$(sed -n 's/^versionName=//p' app/version.properties)"
+          code="$(sed -n 's/^versionCode=//p' app/version.properties)"
+          publish=false
+          if [[ "$GITHUB_EVENT_NAME" == push && "$HEAD_MESSAGE" == *"[release]"* ]] || [[ "$DISPATCH_RELEASE" == true ]]; then
+            publish=true
+          fi
+          echo "Version $version (code $code); publish=$publish"
+          if [[ "$publish" == true ]] && gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$version" >/dev/null 2>&1; then
+            # The same commit pushed again (to main, say), or a version that was not bumped.
+            echo "::warning::v$version is already released, so this run does not publish. For a new Release, bump versionName and versionCode in app/version.properties."
+            publish=false
+          fi
+          if [[ "$publish" == true && ! -f "docs/releases/$version.md" ]]; then
+            echo "::error::docs/releases/$version.md (the release notes) is missing"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: Android NDK
+        run: scripts/ci-ndk.sh
+
+      - name: Which Whisper model the release bundles
+        id: model
+        run: echo "name=$(sed -n 's/^whisperModel=//p' app/version.properties)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Whisper model
+        uses: actions/cache@v4
+        with:
+          path: models/${{ steps.model.outputs.name }}
+          key: whisper-model-${{ steps.model.outputs.name }}
+
+      - name: Fetch the models (the release's Whisper model, speech detector) and check their sha256
+        run: scripts/fetch-models.sh release vad
+
+      - name: Release signing key
+        env:
+          SIGNING_KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_B64 }}
+        run: |
+          if [[ -z "$SIGNING_KEYSTORE_B64" ]]; then
+            echo "::error::The SIGNING_KEYSTORE_B64 repository secret is not set."
+            exit 1
+          fi
+          printf '%s' "$SIGNING_KEYSTORE_B64" | tr -d ' \r\n' | base64 --decode > "$RUNNER_TEMP/release.p12"
+          echo "VT_KEYSTORE_FILE=$RUNNER_TEMP/release.p12" >> "$GITHUB_ENV"
+
+      - name: Build the release APK
+        env:
+          VT_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          # The alias and key password are optional: without them, the keystore's only key is used,
+          # with the store password (a PKCS12 keystore made by keytool has one password for both).
+          VT_KEY_ALIAS="$SIGNING_KEY_ALIAS"
+          if [[ -z "$VT_KEY_ALIAS" ]]; then
+            VT_KEY_ALIAS=$(keytool -list -v -keystore "$VT_KEYSTORE_FILE" -storepass "$VT_STORE_PASSWORD" \
+              | sed -n 's/^Alias name: //p' | head -n 1)
+            echo "Signing key alias from the keystore: $VT_KEY_ALIAS"
+          fi
+          export VT_KEY_ALIAS
+          export VT_KEY_PASSWORD="${SIGNING_KEY_PASSWORD:-$VT_STORE_PASSWORD}"
+          ./gradlew --stacktrace -Pvt.ndkVersion="$VT_NDK" :app:assembleRelease
+
+      - name: Remove the signing key from the runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.p12"
+
+      - name: Self-test of the permission check
+        run: scripts/check-permissions.sh --self-test
+
+      - name: Check the APK (no network permission, release signature, arm64 only, model stored)
+        run: scripts/check-apk.sh app/build/outputs/apk/release/app-release.apk
+
+      - name: Check the native code is optimised (Whisper's and the language model's)
+        run: |
+          scripts/check-native-flags.sh app/.cxx
+          scripts/check-native-flags.sh llm/.cxx
+
+      - name: Upload as a draft Release
+        id: draft
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Clear out drafts left by an earlier failed attempt at this version.
+          for old in $(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" \
+                         --jq ".[] | select(.draft and .tag_name == \"v$VERSION\") | .id"); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$old"
+          done
+          apk="VideoTranslator-$VERSION.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$apk"
+          gh release create "v$VERSION" "$apk" --draft --target "$GITHUB_SHA" \
+            --title "Video Translator $VERSION" --notes-file "docs/releases/$VERSION.md"
+          id="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" \
+                  --jq ".[] | select(.draft and .tag_name == \"v$VERSION\") | .id" | head -1)"
+          [[ -n "$id" ]] || { echo "::error::draft release not found after upload"; exit 1; }
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  emulator:
+    name: Emulator test (real .mp4 files, tiny models, English out)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: Android NDK
+        run: scripts/ci-ndk.sh
+
+      - name: Cache the tiny test model
+        uses: actions/cache@v4
+        with:
+          path: app/src/androidTest/assets/ggml-tiny.bin
+          key: whisper-ggml-tiny-be07e048e1e599ad
+
+      - name: Fetch the tiny model and the speech detector, and check their sha256
+        run: scripts/fetch-models.sh tiny vad
+
+      - name: Make the test videos (whisper.cpp's jfk.wav; the public Japanese UDHR clip)
+        run: |
+          command -v ffmpeg >/dev/null || scripts/ci-apt-install.sh ffmpeg
+          scripts/make-test-video.sh
+          CLIPS_ONLY=ja-udhr scripts/fetch-test-clips.sh build/clips
+          scripts/make-test-video.sh build/clips/ja-udhr.src app/src/androidTest/assets/ja-udhr.mp4 20
+
+      - name: Cache the small test language model
+        uses: actions/cache@v4
+        with:
+          path: app/src/androidTest/assets/test-llm.gguf
+          key: test-llm-qwen3.5-0.8b-q4_k_m
+
+      - name: Fetch a small Qwen3.5 (same family as the app's) for the plumbing test, sha256 checked
+        run: |
+          [[ -f app/src/androidTest/assets/test-llm.gguf ]] ||
+            python3 -I scripts/hf_fetch.py unsloth/Qwen3.5-0.8B-GGUF Q4_K_M app/src/androidTest/assets/test-llm.gguf
+
+      - name: Unit tests, and build the debug app and its test APK (x86_64 for the emulator)
+        run: >
+          ./gradlew --stacktrace -Pvt.ndkVersion="$VT_NDK" -Pvt.debugAbis=x86_64
+          :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
+
+      - name: Check the native code is optimised in the debug build too
+        run: |
+          scripts/check-native-flags.sh app/.cxx
+          scripts/check-native-flags.sh llm/.cxx
+
+      - name: Stop Gradle to leave memory for the emulator
+        run: ./gradlew --stop
+
+      # The emulator needs 1.2 x disk-size free (7.4 GB), and the runner's disk is mostly taken by
+      # preinstalled tools this job never uses, plus the build (the test APK carries a 0.5 GB model).
+      - name: Free disk space for the emulator (unused runner tools, build intermediates)
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost \
+            /usr/share/swift /opt/hostedtoolcache/CodeQL /usr/local/julia* /usr/share/miniconda
+          rm -rf app/.cxx llm/.cxx app/build/intermediates llm/build build/clips
+          ls -la app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          df -h /
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run the test on an Android 14 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: default
+          ram-size: 3072M
+          disk-size: 6144M
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
+          disable-animations: true
+          script: bash scripts/ci-emulator-test.sh
+
+  translation:
+    name: "Whisper's English, the release's model: ${{ matrix.clip }} (PC runner)"
+    # The long checks run for a Release (or by hand): about 3 hours of runner time in all.
+    if: contains(github.event.head_commit.message, '[release]') || github.event.inputs.release == 'true' || github.event.inputs.full == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # One runner per clip, in parallel (each clip alone takes up to ~10 minutes with large-v3).
+        # Keep in step with the checked rows of test-clips/clips.tsv.
+        clip: [en-jfk, ja-udhr, ja-botchan, ru-chekhov, ru-tolstoy, ja-after-music]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Which Whisper model the release bundles
+        id: model
+        run: echo "name=$(sed -n 's/^whisperModel=//p' app/version.properties)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Whisper model
+        uses: actions/cache@v4
+        with:
+          path: models/${{ steps.model.outputs.name }}
+          key: whisper-model-${{ steps.model.outputs.name }}
+
+      - name: Fetch the models (the release's Whisper model, speech detector) and check their sha256
+        run: scripts/fetch-models.sh release vad
+
+      - name: Build vt-transcribe (whisper.cpp with the app's settings)
+        run: |
+          cmake -S tools/vt-transcribe -B build/host -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/host -j"$(nproc)"
+
+      - name: Self-test of the speech-to-video time mapping
+        run: build/host/vt-transcribe --self-test
+
+      # Only this runner's clip (and, for ja-after-music, its two parts), cached: twelve runners
+      # downloading every clip from Wikimedia at once got throttled.
+      - name: Which clip files this runner needs
+        id: clipfiles
+        run: |
+          if [[ "${{ matrix.clip }}" == ja-after-music ]]; then
+            echo "list=music-navy-band,ja-udhr,ja-after-music" >> "$GITHUB_OUTPUT"
+          else
+            echo "list=${{ matrix.clip }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache the clip's source files
+        uses: actions/cache@v4
+        with:
+          path: build/clips/*.src
+          key: test-clip-src-${{ matrix.clip }}-${{ hashFiles('test-clips/clips.tsv') }}
+
+      - name: Fetch the public test clip and check its sha256
+        timeout-minutes: 20
+        env:
+          CLIPS_ONLY: ${{ steps.clipfiles.outputs.list }}
+        run: |
+          command -v ffmpeg >/dev/null || scripts/ci-apt-install.sh ffmpeg
+          scripts/fetch-test-clips.sh build/clips
+
+      - name: Translate it as the app does (with the speech detector) and check the English
+        env:
+          VAD_MODEL: app/src/main/assets/models/ggml-silero-v6.2.0.bin
+          CLIPS_ONLY: ${{ matrix.clip }}
+        run: >
+          python3 -I scripts/check-translation.py build/host/vt-transcribe
+          "$(scripts/fetch-models.sh --path release)" test-clips/clips.tsv build/clips "$(nproc)"
+
+  language-model:
+    name: "Whisper + Qwen3.5-9B, as the app with the model loaded: ${{ matrix.clip }} (PC runner)"
+    # The long checks run for a Release (or by hand): about 3 hours of runner time in all.
+    if: contains(github.event.head_commit.message, '[release]') || github.event.inputs.release == 'true' || github.event.inputs.full == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # One runner per clip, in parallel (each clip alone takes up to ~10 minutes with large-v3).
+        # Keep in step with the checked rows of test-clips/clips.tsv.
+        clip: [en-jfk, ja-udhr, ja-botchan, ru-chekhov, ru-tolstoy, ja-after-music]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Which Whisper model the release bundles
+        id: model
+        run: echo "name=$(sed -n 's/^whisperModel=//p' app/version.properties)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Whisper model
+        uses: actions/cache@v4
+        with:
+          path: models/${{ steps.model.outputs.name }}
+          key: whisper-model-${{ steps.model.outputs.name }}
+
+      - name: Fetch the models (Whisper, speech detector, Qwen3.5-9B) and check their sha256
+        run: |
+          df -h .
+          scripts/fetch-models.sh release vad llm
+
+      - name: Build vt-transcribe and vt-translate (the app's settings)
+        run: |
+          cmake -S tools/vt-transcribe -B build/host -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/host -j"$(nproc)"
+          cmake -S tools/vt-translate -B build/host-llm -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/host-llm -j"$(nproc)"
+
+      # Only this runner's clip (and, for ja-after-music, its two parts), cached: twelve runners
+      # downloading every clip from Wikimedia at once got throttled.
+      - name: Which clip files this runner needs
+        id: clipfiles
+        run: |
+          if [[ "${{ matrix.clip }}" == ja-after-music ]]; then
+            echo "list=music-navy-band,ja-udhr,ja-after-music" >> "$GITHUB_OUTPUT"
+          else
+            echo "list=${{ matrix.clip }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache the clip's source files
+        uses: actions/cache@v4
+        with:
+          path: build/clips/*.src
+          key: test-clip-src-${{ matrix.clip }}-${{ hashFiles('test-clips/clips.tsv') }}
+
+      - name: Fetch the public test clip and check its sha256
+        timeout-minutes: 20
+        env:
+          CLIPS_ONLY: ${{ steps.clipfiles.outputs.list }}
+        run: |
+          command -v ffmpeg >/dev/null || scripts/ci-apt-install.sh ffmpeg
+          scripts/fetch-test-clips.sh build/clips
+
+      - name: Whisper writes it down, Qwen3.5-9B translates, as the app does; check the English
+        env:
+          VAD_MODEL: app/src/main/assets/models/ggml-silero-v6.2.0.bin
+          CLIPS_ONLY: ${{ matrix.clip }}
+          LLM_TOOL: build/host-llm/vt-translate
+          LLM_MODEL: models/llm/Qwen3.5-9B-Q4_K_M.gguf
+        run: >
+          python3 -I scripts/check-translation.py build/host/vt-transcribe
+          "$(scripts/fetch-models.sh --path release)" test-clips/clips.tsv build/clips "$(nproc)"
+
+  arm:
+    name: The phone's arm64 code under an ARM emulator (tiny Whisper as q5_0 like the app's; small Qwen3.5)
+    # The long checks run for a Release (or by hand): about 3 hours of runner time in all.
+    if: contains(github.event.head_commit.message, '[release]') || github.event.inputs.release == 'true' || github.event.inputs.full == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Android NDK
+        run: scripts/ci-ndk.sh
+
+      - name: Cache the tiny test model
+        uses: actions/cache@v4
+        with:
+          path: app/src/androidTest/assets/ggml-tiny.bin
+          key: whisper-ggml-tiny-be07e048e1e599ad
+
+      - name: Fetch the tiny model and the speech detector, and check their sha256
+        run: scripts/fetch-models.sh tiny vad
+
+      # QEMU through the kernel's binfmt handler, as Docker's own action sets it up (apt-get hung on
+      # this runner image for over half an hour, twice). arm64 binaries then run directly, with
+      # QEMU_CPU=max for every feature the phone has. ffmpeg comes with the runner image.
+      - name: QEMU for arm64
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: ffmpeg
+        timeout-minutes: 15
+        run: command -v ffmpeg >/dev/null || scripts/ci-apt-install.sh ffmpeg
+
+      - name: Quantize the tiny model to q5_0, the app model's format
+        run: |
+          cmake -S third_party/whisper.cpp -B build/host-whisper -DCMAKE_BUILD_TYPE=Release \
+            -DWHISPER_BUILD_EXAMPLES=ON -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_SDL2=OFF
+          cmake --build build/host-whisper --target whisper-quantize -j"$(nproc)"
+          build/host-whisper/bin/whisper-quantize app/src/androidTest/assets/ggml-tiny.bin build/ggml-tiny-q5_0.bin q5_0
+
+      - name: Build vt-transcribe for arm64 Android with the app's flags (static, for QEMU)
+        run: |
+          ndk="$ANDROID_HOME/ndk/$VT_NDK"
+          cmake -S tools/vt-transcribe -B build/arm64-v8a -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-33 -DVT_STATIC=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cmake --build build/arm64-v8a -j"$(nproc)"
+          file build/arm64-v8a/vt-transcribe
+          scripts/check-native-flags.sh build/arm64-v8a
+
+      - name: Run it under QEMU (with the speech detector, as the app) and check the text
+        env:
+          CLIPS_ONLY: en-jfk
+          REQUIRE_FEATURES: NEON FP16_VA DOTPROD MATMUL_INT8
+          VAD_MODEL: app/src/main/assets/models/ggml-silero-v6.2.0.bin
+        run: |
+          scripts/fetch-test-clips.sh build/clips
+          python3 -I scripts/check-translation.py build/arm64-v8a/vt-transcribe build/ggml-tiny-q5_0.bin \
+            test-clips/clips.tsv build/clips 2 env QEMU_CPU=max
+
+      - name: Build vt-translate (the language model) for arm64 Android with the app's flags (static, for QEMU)
+        run: |
+          ndk="$ANDROID_HOME/ndk/$VT_NDK"
+          cmake -S tools/vt-translate -B build/arm64-v8a-llm -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-33 -DVT_STATIC=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cmake --build build/arm64-v8a-llm -j"$(nproc)"
+          file build/arm64-v8a-llm/vt-translate
+          scripts/check-native-flags.sh build/arm64-v8a-llm
+
+      - name: Cache the small test language model
+        uses: actions/cache@v4
+        with:
+          path: app/src/androidTest/assets/test-llm.gguf
+          key: test-llm-qwen3.5-0.8b-q4_k_m
+
+      - name: Fetch a small Qwen3.5 (same family and quantisation as the app's), sha256 checked
+        run: |
+          [[ -f app/src/androidTest/assets/test-llm.gguf ]] ||
+            python3 -I scripts/hf_fetch.py unsloth/Qwen3.5-0.8B-GGUF Q4_K_M app/src/androidTest/assets/test-llm.gguf
+
+      - name: Translate the Japanese UDHR transcript on x86, then under QEMU with the phone's code
+        env:
+          EXPECT: "free|freedom equal|equality dignity rights|right reason conscience born human|humans|people"
+          MIN_WORDS: "3"
+        run: |
+          cmake -S tools/vt-translate -B build/host-llm -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/host-llm -j"$(nproc)"
+          echo "== x86 (for comparison)"
+          python3 -I scripts/check-language-model.py test-clips/ja-udhr-transcript.txt \
+            build/host-llm/vt-translate app/src/androidTest/assets/test-llm.gguf "$(nproc)" || true
+          echo "== arm64 under QEMU"
+          REQUIRE_FEATURES="NEON FP16_VA DOTPROD MATMUL_INT8" python3 -I scripts/check-language-model.py \
+            test-clips/ja-udhr-transcript.txt build/arm64-v8a-llm/vt-translate \
+            app/src/androidTest/assets/test-llm.gguf "$(nproc)" env QEMU_CPU=max
+
+  publish:
+    name: Publish the Release
+    needs: [apk, emulator, translation, language-model, arm]
+    if: needs.apk.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ID: ${{ needs.apk.outputs.draft_id }}
+          VERSION: ${{ needs.apk.outputs.version }}
+        run: |
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -F draft=false -f make_latest=true --jq '.html_url'
+          echo "Published v$VERSION"
+
+  discard-draft:
+    name: Discard the draft (a check failed)
+    needs: [apk, emulator, translation, language-model, arm]
+    if: >
+      always() && needs.apk.outputs.draft_id != '' &&
+      (needs.emulator.result != 'success' || needs.translation.result != 'success' ||
+       needs.language-model.result != 'success' || needs.arm.result != 'success')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          ID: ${{ needs.apk.outputs.draft_id }}
+        run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$ID"

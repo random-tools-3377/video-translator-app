@@ -1,0 +1,87 @@
+# Run by hand. Translates the public Russian and Japanese test clips (test-clips/) with several
+# models and decoding settings, so the English can be compared and the owner can decide what the
+# app should use. Every variant uses the speech detector, as the app does. Run times are from
+# GitHub's PC runner: compare them with each other, not with the phone.
+#
+# Variants: 1 medium greedy; 2 medium beam 5; 3 medium beam 5 + previous text as context;
+#           4 large-v3 beam 5 (the app since 0.1.2); 5 large-v2 beam 5.
+name: Compare models
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'Variant numbers to run, e.g. "4,5" (empty: all)'
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  pick:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          ONLY: ${{ github.event.inputs.only }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          variants = [
+            dict(id="1", label="1 medium, greedy", model="medium", name="medium-q5_0", args="--beam 0 --no-context"),
+            dict(id="2", label="2 medium, beam search 5", model="medium", name="medium-q5_0", args="--beam 5 --no-context"),
+            dict(id="3", label="3 medium, beam search 5 + previous text as context", model="medium", name="medium-q5_0", args="--beam 5 --context"),
+            dict(id="4", label="4 large-v3, beam search 5 (the app since 0.1.2)", model="large", name="large-v3-q5_0", args="--beam 5 --no-context"),
+            dict(id="5", label="5 large-v2, beam search 5", model="large2", name="large-v2-q5_0", args="--beam 5 --no-context"),
+          ]
+          only = [x.strip() for x in os.environ.get("ONLY", "").split(",") if x.strip()]
+          picked = [v for v in variants if not only or v["id"] in only]
+          print("matrix=" + json.dumps(picked))
+          PY
+
+  compare:
+    name: ${{ matrix.label }}
+    needs: pick
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.pick.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Cache the model
+        uses: actions/cache@v4
+        with:
+          path: models/${{ matrix.name }}
+          key: whisper-model-${{ matrix.name }}
+
+      - name: Fetch the models and check their sha256
+        run: scripts/fetch-models.sh ${{ matrix.model }} vad
+
+      - name: Build vt-transcribe
+        run: |
+          cmake -S tools/vt-transcribe -B build/host -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/host -j"$(nproc)"
+
+      - name: Fetch the public test clips
+        run: |
+          command -v ffmpeg >/dev/null || scripts/ci-apt-install.sh ffmpeg
+          scripts/fetch-test-clips.sh build/clips
+
+      - name: Translate
+        env:
+          VAD_MODEL: app/src/main/assets/models/ggml-silero-v6.2.0.bin
+          EXTRA_ARGS: ${{ matrix.args }}
+          CLIPS_ONLY: ja-udhr,ja-botchan,ru-chekhov,ru-tolstoy
+          REPORT_ONLY: "1"
+        run: >
+          python3 -I scripts/check-translation.py build/host/vt-transcribe
+          "$(scripts/fetch-models.sh --path ${{ matrix.model }})"
+          test-clips/clips.tsv build/clips "$(nproc)"

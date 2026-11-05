@@ -1,0 +1,70 @@
+# Run by hand. With the language model loaded, Whisper only writes down the spoken language,
+# so this compares faster ways of doing that, each followed by Qwen3.5-9B translating as
+# the app does: large-v3 beam 5 (the app now), large-v3 greedy, large-v3-turbo beam 5, turbo greedy.
+# One runner per clip, all four ways on the same runner, so the times compare fairly. Prints the
+# transcript, the English, and the times. Changes nothing in the app.
+name: Experiment - faster transcription
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: ${{ matrix.clip }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        clip: [ja-udhr, ja-botchan, ru-chekhov, ru-tolstoy]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Cache Whisper large-v3
+        uses: actions/cache@v4
+        with:
+          path: models/large-v3-q5_0
+          key: whisper-model-large-v3-q5_0
+
+      - name: Models (large-v3, speech detector, Qwen3.5-9B; large-v3-turbo checked against Hugging Face's sha256)
+        run: |
+          scripts/fetch-models.sh large vad llm
+          python3 -I scripts/hf_fetch.py ggerganov/whisper.cpp ggml-large-v3-turbo-q5_0.bin models/turbo/ggml-large-v3-turbo-q5_0.bin
+
+      - name: Build vt-transcribe and vt-translate (the app's settings)
+        run: |
+          cmake -S tools/vt-transcribe -B build/host -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/host -j"$(nproc)"
+          cmake -S tools/vt-translate -B build/host-llm -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/host-llm -j"$(nproc)"
+
+      - name: The clip
+        timeout-minutes: 20
+        env:
+          CLIPS_ONLY: ${{ matrix.clip }}
+        run: |
+          command -v ffmpeg >/dev/null || scripts/ci-apt-install.sh ffmpeg
+          scripts/fetch-test-clips.sh build/clips
+
+      - name: Four ways, each followed by Qwen3.5-9B
+        env:
+          VAD_MODEL: app/src/main/assets/models/ggml-silero-v6.2.0.bin
+          CLIPS_ONLY: ${{ matrix.clip }}
+          LLM_TOOL: build/host-llm/vt-translate
+          LLM_MODEL: models/llm/Qwen3.5-9B-Q4_K_M.gguf
+          REPORT_ONLY: "1"
+        run: |
+          large="$(scripts/fetch-models.sh --path large)"
+          turbo=models/turbo/ggml-large-v3-turbo-q5_0.bin
+          for way in "large-v3 beam 5 (the app now)|$large|--beam 5" "large-v3 greedy|$large|--beam 0" \
+                     "turbo beam 5|$turbo|--beam 5" "turbo greedy|$turbo|--beam 0"; do
+            IFS='|' read -r label model args <<<"$way"
+            echo "######## $label"
+            EXTRA_ARGS="$args" python3 -I scripts/check-translation.py build/host/vt-transcribe "$model" \
+              test-clips/clips.tsv build/clips "$(nproc)" || true
+          done

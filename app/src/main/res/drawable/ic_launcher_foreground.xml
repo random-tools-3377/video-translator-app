@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A video frame with two subtitle lines. 108dp canvas, drawn inside the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- frame -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4"
+        android:pathData="M30,34 L78,34 Q82,34 82,38 L82,70 Q82,74 78,74 L30,74 Q26,74 26,70 L26,38 Q26,34 30,34 Z" />
+    <!-- play triangle -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M49,42 L49,56 L60,49 Z" />
+    <!-- subtitle lines -->
+    <path
+        android:fillColor="#FFD54F"
+        android:pathData="M34,61 L74,61 L74,65 L34,65 Z" />
+    <path
+        android:fillColor="#FFD54F"
+        android:pathData="M40,67.5 L68,67.5 L68,70.5 L40,70.5 Z" />
+</vector>

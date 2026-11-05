@@ -1,0 +1,40 @@
+# Run by hand: searches Wikimedia Commons for public Russian/Japanese speech clips and their
+# licences (the cloud session cannot reach Commons). With "titles", downloads those files and
+# prints their sha256 and length instead.
+name: Find test clips
+
+on:
+  workflow_dispatch:
+    inputs:
+      titles:
+        description: 'Optional: File: titles separated by "|" to download and fingerprint'
+        required: false
+        default: ""
+      args:
+        description: 'Optional, instead: search "query" ... | fingerprint URL ...'
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  find:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Search or fingerprint
+        env:
+          TITLES: ${{ github.event.inputs.titles }}
+          ARGS: ${{ github.event.inputs.args }}
+        run: |
+          command -v ffprobe >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg; }
+          if [[ -n "$ARGS" ]]; then
+            python3 -I scripts/find-test-clips.py
+          elif [[ -n "$TITLES" ]]; then
+            IFS='|' read -ra t <<<"$TITLES"
+            python3 -I scripts/find-test-clips.py details "${t[@]}"
+          else
+            python3 -I scripts/find-test-clips.py search
+          fi

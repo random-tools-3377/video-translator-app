@@ -1,0 +1,30 @@
+# Build output
+.gradle/
+build/
+.cxx/
+.externalNativeBuild/
+local.properties
+*.apk
+*.aab
+
+# Whisper models: fetched in CI and checked against sha256, never committed
+*.bin
+*.gguf
+
+# Signing keys live in repository secrets
+*.jks
+*.keystore
+*.p12
+
+# Videos stay on the phone. Public test clips go in a fixtures folder, with their licence.
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.m4a
+!**/fixtures/**
+
+# Editors
+.idea/
+*.iml
+.DS_Store

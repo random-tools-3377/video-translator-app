@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Native code only (libvtllama.so). No permissions: the app's manifest removes every network one,
+     and CI checks the built APK. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
