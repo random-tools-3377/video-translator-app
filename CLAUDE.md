@@ -116,6 +116,23 @@ audio somewhere.
   Cancel. The original video is never modified.
 - Build it in this order, each step a Release the owner can try: English transcript, then the
   in-app player with styling and editing, then the burned-in copy.
+- **Done in 0.2.0 (stage 2, first part):** `ui/PlayerScreen.kt` plays the picked URI with Media3
+  ExoPlayer (`PlayerView` in an `AndroidView`); `subtitles/SubtitleOverlayView` sits inside the
+  player's `exo_content_frame` (exactly the picture's size, under the controls) and draws the
+  current cue every frame while playing with `subtitles/SubtitleRenderer` (StaticLayout on a
+  Canvas), the one renderer the burned-in copy must also use. `SubtitleStyle` sizes are fractions
+  of the picture (text: of its shorter side), so preview and copy match at any resolution. The
+  style panel sits below the video and changes it live; while it is open and nothing is being
+  said, the nearest line (else a sample) is shown. `SubtitleStyleStore` keeps the style in
+  SharedPreferences. `subtitles/Cues.kt` splits lines into cues of at most two rows of about 42
+  characters (East Asian characters count double), sharing a long line's time by length (the
+  English has no timing of its own inside a line; Whisper's token timestamps are not used yet).
+  `SubtitleFiles` writes `.srt` (cues, with the "all earlier/later" offset applied) and `.txt`
+  through `CreateDocument`, and reads `.srt` back (BOM, `.` decimals, missing numbers, tags) for
+  "Watch a video with subtitles you saved" (Photo Picker, then `OpenDocument`). The activity
+  handles rotation itself (`configChanges`), so playback survives turning the phone. Unit tests:
+  `app/src/test/.../subtitles/SubtitlesTest.kt`. Still to do in stage 2: reword a line, nudge one
+  line's start and end.
 
 ### The model
 
@@ -362,8 +379,9 @@ All on GitHub's PC runners with the clips in `test-clips/`.
 
 - Stage 1 (English transcript) is in use, with the optional language model. 0.1.0–0.1.3 were
   built in the earlier private repository; 0.1.4 (background translation) is the first Release
-  from this one, under the new application ID. Do not start stage 2 (the in-app player) until the
-  owner says so.
+  from this one, under the new application ID. Stage 2 started in 0.2.0 (player, look settings
+  with live preview, timing offset, save and open `.srt`); next: reword and nudge single lines,
+  then stage 3 (the burned-in copy).
 - Faster transcription for long videos: large-v3 greedy for the language-model path since 0.1.6
   (about 20% faster with the same transcript on the public clips; turbo made mistakes). Speed on
   the phone not yet known.

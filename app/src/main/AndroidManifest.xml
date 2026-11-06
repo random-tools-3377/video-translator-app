@@ -30,9 +30,11 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.VideoTranslator">
 
+        <!-- Turning the phone does not restart the screen, so a playing video keeps playing. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>

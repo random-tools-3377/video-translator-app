@@ -37,6 +37,8 @@ data class Timings(
 /** Everything the screen shows. Lives in memory only, and is gone when the app closes. */
 data class JobState(
     val phase: Phase = Phase.Idle,
+    /** The video the user picked or shared, to play it with its subtitles (never copied). */
+    val videoUri: Uri? = null,
     val videoName: String? = null,
     val durationMs: Long? = null,
     val stage: Stage? = null,
@@ -87,6 +89,7 @@ object TranslationEngine {
         current = cancellation
         _state.value = JobState(
             phase = Phase.Working,
+            videoUri = uri,
             stage = Stage.ReadingAudio,
             startedAtMs = SystemClock.elapsedRealtime(),
             languageModel = LanguageModels.installedFile(app)?.first?.name,

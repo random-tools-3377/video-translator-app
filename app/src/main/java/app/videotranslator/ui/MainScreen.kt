@@ -53,6 +53,15 @@ import app.videotranslator.whisper.BUNDLED_MODEL_NAME
 import app.videotranslator.whisper.Segment
 import kotlinx.coroutines.delay
 
+/** What can be done with the subtitles of the video on screen. */
+class SubtitleActions(
+    val onWatch: () -> Unit,
+    val onSaveSrt: () -> Unit,
+    val onSaveText: () -> Unit,
+    /** Pick a video, then the subtitles saved for it earlier, and watch them together. */
+    val onOpenSaved: () -> Unit,
+)
+
 /** What the start screen's language-model section can ask for. */
 class ModelActions(
     val onDownload: (KnownModel) -> Unit,
@@ -69,6 +78,7 @@ fun MainScreen(
     onPick: () -> Unit,
     onCancel: () -> Unit,
     modelActions: ModelActions,
+    subtitleActions: SubtitleActions,
 ) {
     val working = state.phase == Phase.Working
     val importing = modelState.importing != null
@@ -84,15 +94,21 @@ fun MainScreen(
         topBar = { CenterAlignedTopAppBar(title = { Text("Video Translator") }) },
     ) { padding ->
         if (state.phase == Phase.Idle) {
-            StartScreen(Modifier.padding(padding), modelState, onPick, modelActions)
+            StartScreen(Modifier.padding(padding), modelState, onPick, modelActions, subtitleActions)
         } else {
-            JobScreen(Modifier.padding(padding), state, onPick, onCancel)
+            JobScreen(Modifier.padding(padding), state, onPick, onCancel, subtitleActions)
         }
     }
 }
 
 @Composable
-private fun StartScreen(modifier: Modifier, modelState: LanguageModelState, onPick: () -> Unit, actions: ModelActions) {
+private fun StartScreen(
+    modifier: Modifier,
+    modelState: LanguageModelState,
+    onPick: () -> Unit,
+    actions: ModelActions,
+    subtitleActions: SubtitleActions,
+) {
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -120,7 +136,11 @@ private fun StartScreen(modifier: Modifier, modelState: LanguageModelState, onPi
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = subtitleActions.onOpenSaved, enabled = modelState.importing == null) {
+            Text("Watch a video with subtitles you saved")
+        }
+        Spacer(Modifier.height(16.dp))
         LanguageModelCard(modelState, actions)
         Spacer(Modifier.height(16.dp))
         Text(
@@ -192,7 +212,13 @@ private fun LanguageModelCard(state: LanguageModelState, actions: ModelActions) 
 }
 
 @Composable
-private fun JobScreen(modifier: Modifier, state: JobState, onPick: () -> Unit, onCancel: () -> Unit) {
+private fun JobScreen(
+    modifier: Modifier,
+    state: JobState,
+    onPick: () -> Unit,
+    onCancel: () -> Unit,
+    subtitleActions: SubtitleActions,
+) {
     val working = state.phase == Phase.Working
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     if (working) {
@@ -248,6 +274,16 @@ private fun JobScreen(modifier: Modifier, state: JobState, onPick: () -> Unit, o
                 Spacer(Modifier.width(16.dp))
                 if (state.lines.isNotEmpty()) {
                     Text("${state.lines.size} lines", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (!working && state.lines.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                if (state.videoUri != null) {
+                    Button(onClick = subtitleActions.onWatch) { Text("Watch with subtitles") }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = subtitleActions.onSaveSrt) { Text("Save subtitles (.srt)") }
+                    TextButton(onClick = subtitleActions.onSaveText) { Text("Save text") }
                 }
             }
         }
