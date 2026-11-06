@@ -48,7 +48,8 @@ jobs:
         env:
           CLIPS_ONLY: ${{ matrix.clip }}
         run: |
-          command -v ffmpeg >/dev/null || scripts/ci-apt-install.sh ffmpeg
+          ffmpeg_dir=$(scripts/ci-ffmpeg.sh)
+          [[ -z "$ffmpeg_dir" ]] || PATH="$ffmpeg_dir:$PATH"
           scripts/fetch-test-clips.sh build/clips
 
       - name: Four ways, each followed by Qwen3.5-9B
