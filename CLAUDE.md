@@ -339,7 +339,9 @@ All on GitHub's PC runners with the clips in `test-clips/`.
   the unquantised tiny model was dropped from that job because emulating it took over 10).
 - `apt-get install` on GitHub's runners can stall for a quarter of an hour in the man-db trigger,
   or hang on a mirror; `scripts/ci-apt-install.sh` switches man-db off and has timeouts and
-  retries. Many parallel runners fetching every clip from Wikimedia get throttled, so each
+  retries. Ubuntu's mirror can also trickle (ffmpeg's packages took over 20 minutes on two runners
+  at once), so the clip-fetching steps take a static ffmpeg from the imageio-ffmpeg wheel on PyPI
+  (`scripts/ci-ffmpeg.sh`, pinned by sha256, apt-get only as the fallback). Many parallel runners fetching every clip from Wikimedia get throttled, so each
   translation runner fetches and caches only its own clip.
 - The emulator test takes about 80 s for jfk's 11 s with the tiny model. That says nothing about
   the phone: the x86 emulator has no AVX or F16C, so ggml runs its slowest paths there. Phone speed
