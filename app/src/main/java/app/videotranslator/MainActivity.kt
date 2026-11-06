@@ -33,10 +33,15 @@ import app.videotranslator.ui.MainScreen
 import app.videotranslator.ui.ModelActions
 import app.videotranslator.ui.PlayerScreen
 import app.videotranslator.ui.SubtitleActions
+import app.videotranslator.ui.withLine
+import app.videotranslator.ui.withoutLine
 import app.videotranslator.whisper.Segment
 
-/** A video playing with its subtitles: the lines just worked out, or opened from a saved file. */
-private data class Watch(val uri: Uri, val title: String?, val lines: List<Segment>)
+/**
+ * A video playing with its subtitles: the lines just worked out ([fromJob]: they live in
+ * TranslationEngine, so a correction shows on the results screen too), or opened from a file.
+ */
+private data class Watch(val uri: Uri, val title: String?, val lines: List<Segment>, val fromJob: Boolean = false)
 
 class MainActivity : ComponentActivity() {
 
@@ -106,11 +111,13 @@ class MainActivity : ComponentActivity() {
                         openSubtitles.launch(arrayOf("*/*"))
                     }
                 }
-                val lines = watch?.lines ?: state.lines
+                // The lines being watched: the job's own (corrections go back to it) or a file's.
+                val watching = watch
+                val lines = if (watching == null || watching.fromJob) state.lines else watching.lines
                 val name = watch?.title ?: state.videoName
                 val subtitleActions = SubtitleActions(
                     onWatch = {
-                        state.videoUri?.let { watch = Watch(it, state.videoName, state.lines) }
+                        state.videoUri?.let { watch = Watch(it, state.videoName, emptyList(), fromJob = true) }
                     },
                     onSaveSrt = {
                         pendingSave = SubtitleFiles.toSrt(lines, offsetMs)
@@ -123,6 +130,14 @@ class MainActivity : ComponentActivity() {
                     onOpenSaved = {
                         pickForSubtitles.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
                     },
+                    onEditLine = { i, line ->
+                        val w = watch
+                        if (w == null || w.fromJob) TranslationEngine.editLine(i, line) else watch = w.copy(lines = w.lines.withLine(i, line))
+                    },
+                    onRemoveLine = { i ->
+                        val w = watch
+                        if (w == null || w.fromJob) TranslationEngine.removeLine(i) else watch = w.copy(lines = w.lines.withoutLine(i))
+                    },
                 )
 
                 LaunchedEffect(state.phase, queued) {
@@ -134,12 +149,14 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                val watching = watch
                 if (watching != null) {
                     PlayerScreen(
                         videoUri = watching.uri,
                         title = watching.title,
-                        lines = watching.lines,
+                        lines = lines,
+                        spoken = if (watching.fromJob) state.spoken else null,
+                        onEditLine = subtitleActions.onEditLine,
+                        onRemoveLine = subtitleActions.onRemoveLine,
                         offsetMs = offsetMs,
                         onOffsetChange = { offsetMs = it },
                         style = style,
@@ -150,9 +167,7 @@ class MainActivity : ComponentActivity() {
                             state = exportState,
                             onSave = {
                                 askForNotificationsOnce()
-                                ExportEngine.start(
-                                    this@MainActivity, watching.uri, watching.title, watching.lines, offsetMs, style,
-                                )
+                                ExportEngine.start(this@MainActivity, watching.uri, watching.title, lines, offsetMs, style)
                             },
                             onCancel = { ExportEngine.cancel() },
                             onOpen = { uri -> openVideo(uri) },

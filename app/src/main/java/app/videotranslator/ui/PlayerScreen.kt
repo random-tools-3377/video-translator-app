@@ -38,6 +38,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,6 +71,7 @@ import app.videotranslator.subtitles.SubtitleStyle
 import app.videotranslator.subtitles.toCues
 import app.videotranslator.whisper.Segment
 import java.util.Locale
+import kotlinx.coroutines.delay
 import android.graphics.Color as AndroidColor
 
 /** Saving a copy with the subtitles burned in, as the player screen sees it. */
@@ -80,12 +83,19 @@ class CopyActions(
     val onDismiss: () -> Unit,
 )
 
+/** What is open under the video. */
+private enum class Panel { None, Style, Lines }
+
 /** Plays the video the user picked (no copy is made) with the subtitles drawn over it. */
 @Composable
 fun PlayerScreen(
     videoUri: Uri,
     title: String?,
     lines: List<Segment>,
+    /** The lines as said, index for index with [lines], when they were translated; else null. */
+    spoken: List<Segment>?,
+    onEditLine: (Int, Segment) -> Unit,
+    onRemoveLine: (Int) -> Unit,
     offsetMs: Long,
     onOffsetChange: (Long) -> Unit,
     style: SubtitleStyle,
@@ -98,7 +108,11 @@ fun PlayerScreen(
     val context = LocalContext.current
     var confirmCopy by remember { mutableStateOf(false) }
     val cues = remember(lines) { toCues(lines) }
-    var styling by remember { mutableStateOf(false) }
+    var panel by remember { mutableStateOf(Panel.None) }
+    var editing by remember { mutableStateOf<Int?>(null) }
+    // Where the video is, for the line list; and where to pause after playing one line.
+    var position by remember { mutableLongStateOf(0L) }
+    var stopAtMs by remember { mutableStateOf<Long?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
 
     val overlay = remember { SubtitleOverlayView(context) }
@@ -144,7 +158,32 @@ fun PlayerScreen(
         onDispose { view.keepScreenOn = false }
     }
 
-    BackHandler { if (styling) styling = false else onBack() }
+    if (panel == Panel.Lines) {
+        LaunchedEffect(player) {
+            while (true) {
+                position = player.currentPosition
+                stopAtMs?.let { stop ->
+                    if (position >= stop) {
+                        player.pause()
+                        stopAtMs = null
+                    }
+                }
+                delay(200)
+            }
+        }
+    }
+    val currentLine = if (panel == Panel.Lines) {
+        lines.indexOfFirst { position - offsetMs >= it.startMs && position - offsetMs < it.endMs }
+    } else {
+        -1
+    }
+    fun playLine(line: Segment, fromMs: Long) {
+        player.seekTo((fromMs + offsetMs).coerceAtLeast(0))
+        stopAtMs = line.endMs + offsetMs + 300
+        player.play()
+    }
+
+    BackHandler { if (panel != Panel.None) panel = Panel.None else onBack() }
 
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     Surface(Modifier.fillMaxSize()) {
@@ -154,7 +193,7 @@ fun PlayerScreen(
                     Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    TextButton(onClick = { if (styling) styling = false else onBack() }) { Text("Back") }
+                    TextButton(onClick = { if (panel != Panel.None) panel = Panel.None else onBack() }) { Text("Back") }
                     Text(
                         title ?: "Video",
                         style = MaterialTheme.typography.titleMedium,
@@ -182,7 +221,7 @@ fun PlayerScreen(
                         overlay.cues = cues
                         overlay.offsetMs = offsetMs
                         overlay.style = style
-                        overlay.preview = styling
+                        overlay.preview = panel == Panel.Style
                         overlay.invalidate()
                     },
                     modifier = Modifier.fillMaxSize(),
@@ -197,14 +236,25 @@ fun PlayerScreen(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
-                if (styling) {
-                    StylePanel(style, onStyleChange, onDone = { styling = false }, Modifier.weight(1f))
-                } else {
-                    Controls(
+                when (panel) {
+                    Panel.Style -> StylePanel(style, onStyleChange, onDone = { panel = Panel.None }, Modifier.weight(1f))
+                    Panel.Lines -> LinesPanel(
+                        lines = lines,
+                        spoken = spoken,
+                        current = currentLine,
+                        onTap = { i ->
+                            lines.getOrNull(i)?.let { playLine(it, it.startMs) }
+                            editing = i
+                        },
+                        onDone = { panel = Panel.None },
+                        modifier = Modifier.weight(1f),
+                    )
+                    Panel.None -> Controls(
                         lineCount = lines.size,
                         offsetMs = offsetMs,
                         onOffsetChange = onOffsetChange,
-                        onStyle = { styling = true },
+                        onStyle = { panel = Panel.Style },
+                        onLines = { panel = Panel.Lines },
                         onSaveSrt = onSaveSrt,
                         onSaveText = onSaveText,
                         copy = copy,
@@ -212,6 +262,30 @@ fun PlayerScreen(
                     )
                 }
             }
+        }
+    }
+
+    editing?.let { i ->
+        val line = lines.getOrNull(i)
+        if (line != null) {
+            LineEditDialog(
+                line = line,
+                said = spokenFor(spoken, lines, i),
+                onSave = {
+                    onEditLine(i, it)
+                    editing = null
+                },
+                onRemove = {
+                    onRemoveLine(i)
+                    editing = null
+                },
+                onPlay = {
+                    onEditLine(i, it)
+                    editing = null
+                    playLine(it, it.startMs - 1000)
+                },
+                onDismiss = { editing = null },
+            )
         }
     }
 
@@ -246,6 +320,7 @@ private fun Controls(
     offsetMs: Long,
     onOffsetChange: (Long) -> Unit,
     onStyle: () -> Unit,
+    onLines: () -> Unit,
     onSaveSrt: () -> Unit,
     onSaveText: () -> Unit,
     copy: CopyActions,
@@ -269,6 +344,8 @@ private fun Controls(
         }
         if (offsetMs != 0L) TextButton(onClick = { onOffsetChange(0) }) { Text("Back to Whisper's timing") }
         Spacer(Modifier.height(8.dp))
+        Button(onClick = onLines) { Text("See and correct the words ($lineCount lines)") }
+        Spacer(Modifier.height(4.dp))
         Button(onClick = onStyle) { Text("Change how the subtitles look") }
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {

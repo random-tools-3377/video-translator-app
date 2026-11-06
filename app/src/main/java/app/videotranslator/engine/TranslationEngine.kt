@@ -47,6 +47,12 @@ data class JobState(
     val languageName: String? = null,
     val lines: List<Segment> = emptyList(),
     /**
+     * The lines as first written down, index for index with [lines]: the spoken language when the
+     * language model translates them, otherwise the same as [lines]. Shown under a line while the
+     * user corrects its English.
+     */
+    val spoken: List<Segment> = emptyList(),
+    /**
      * The language model this job uses for anything but English (Whisper then writes down the
      * spoken language first), or null: Whisper translates by itself.
      */
@@ -109,6 +115,25 @@ object TranslationEngine {
     /** Back to the start screen, forgetting the last result. */
     fun clear() {
         if (!isBusy) _state.value = JobState()
+    }
+
+    /** The user corrected line [index] (its words or its times). Not while it is still working. */
+    fun editLine(index: Int, line: Segment) {
+        _state.update {
+            if (it.phase == Phase.Working || index !in it.lines.indices) it
+            else it.copy(lines = it.lines.toMutableList().also { l -> l[index] = line })
+        }
+    }
+
+    /** The user removed line [index] (a line that should not be there). */
+    fun removeLine(index: Int) {
+        _state.update {
+            if (it.phase == Phase.Working || index !in it.lines.indices) it
+            else it.copy(
+                lines = it.lines.toMutableList().also { l -> l.removeAt(index) },
+                spoken = if (index in it.spoken.indices) it.spoken.toMutableList().also { l -> l.removeAt(index) } else it.spoken,
+            )
+        }
     }
 
     private fun run(app: Context, uri: Uri, cancellation: Cancellation) {
@@ -223,7 +248,7 @@ object TranslationEngine {
         }
 
         override fun onLine(line: Segment) {
-            _state.update { it.copy(lines = it.lines + line) }
+            _state.update { it.copy(lines = it.lines + line, spoken = it.spoken + line) }
         }
 
         override fun onLinesReplaced(first: Int, lines: List<Segment>) {

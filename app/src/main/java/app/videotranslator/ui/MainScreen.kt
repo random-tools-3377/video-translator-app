@@ -35,6 +35,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -60,6 +61,9 @@ class SubtitleActions(
     val onSaveText: () -> Unit,
     /** Pick a video, then the subtitles saved for it earlier, and watch them together. */
     val onOpenSaved: () -> Unit,
+    /** The user corrected or removed a line of the finished result. */
+    val onEditLine: (Int, Segment) -> Unit,
+    val onRemoveLine: (Int) -> Unit,
 )
 
 /** What the start screen's language-model section can ask for. */
@@ -288,7 +292,10 @@ private fun JobScreen(
             }
         }
         HorizontalDivider()
-        Lines(state.lines, working, state.languageModel != null, Modifier.weight(1f))
+        Lines(
+            state.lines, state.spoken, working, state.languageModel != null, Modifier.weight(1f),
+            onEdit = if (working) null else subtitleActions,
+        )
     }
 }
 
@@ -337,8 +344,17 @@ private fun StatusLine(state: JobState, elapsedMs: Long) {
 }
 
 @Composable
-private fun Lines(lines: List<Segment>, working: Boolean, twoSteps: Boolean, modifier: Modifier) {
+private fun Lines(
+    lines: List<Segment>,
+    spoken: List<Segment>,
+    working: Boolean,
+    twoSteps: Boolean,
+    modifier: Modifier,
+    /** When done: tapping a line opens it to be corrected. */
+    onEdit: SubtitleActions?,
+) {
     val listState = rememberLazyListState()
+    var editing by remember { mutableStateOf<Int?>(null) }
     // Follow new lines as they arrive, unless the user has scrolled up to read.
     val atEnd by remember {
         derivedStateOf {
@@ -363,17 +379,42 @@ private fun Lines(lines: List<Segment>, working: Boolean, twoSteps: Boolean, mod
         )
         return
     }
-    LazyColumn(modifier = modifier.fillMaxWidth(), state = listState, contentPadding = PaddingValues(16.dp)) {
-        itemsIndexed(lines, key = { i, _ -> i }) { _, line ->
-            Column(Modifier.padding(bottom = 12.dp)) {
-                Text(
-                    "${formatClock(line.startMs)} – ${formatClock(line.endMs)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(line.text, style = MaterialTheme.typography.bodyLarge)
-            }
+    if (onEdit != null) {
+        Text(
+            "Tap a line to correct its words or its timing.",
+            modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    LazyColumn(modifier = modifier.fillMaxWidth(), state = listState, contentPadding = PaddingValues(8.dp)) {
+        itemsIndexed(lines, key = { i, _ -> i }) { i, line ->
+            LineRow(
+                line = line,
+                // While the language model works, a line is shown as said until its English arrives.
+                said = if (working) null else spokenFor(spoken, lines, i),
+                highlighted = false,
+                onClick = if (onEdit != null) ({ editing = i }) else null,
+            )
         }
+    }
+    val i = editing
+    val line = i?.let { lines.getOrNull(it) }
+    if (onEdit != null && i != null && line != null) {
+        LineEditDialog(
+            line = line,
+            said = spokenFor(spoken, lines, i),
+            onSave = {
+                onEdit.onEditLine(i, it)
+                editing = null
+            },
+            onRemove = {
+                onEdit.onRemoveLine(i)
+                editing = null
+            },
+            onPlay = null,
+            onDismiss = { editing = null },
+        )
     }
 }
 

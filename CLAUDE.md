@@ -148,6 +148,16 @@ audio somewhere.
   `SubtitledCopyTest` (emulator) makes a copy of jfk.mp4 and checks picture and sound tracks, same
   size and length, and white subtitle pixels at the bottom (none at the top, none in the
   original).
+- **Done in 0.4.0 (the rest of stage 2):** `ui/LineEditing.kt`: `LinesPanel` under the video
+  lists every line with its time (the one being said highlighted and kept in view; the position
+  is polled every 200 ms while it is open); tapping a line plays just that line (seek, play, pause
+  at its end) and opens `LineEditDialog`: the words, start and end in 0.1 s steps (at least 0.2 s
+  long), Save, Save and play (from 1 s before), Remove. The results screen's list opens the same
+  dialog (without playing). `JobState.spoken` keeps each line as first written down, index for
+  index with `lines`, and the dialog and list show it under the English when they differ (the
+  language model's translations). Corrections go to `TranslationEngine.editLine/removeLine` when
+  the lines are the job's (`Watch.fromJob`), else to the watched file's lines, so the player,
+  `.srt`/`.txt` and the burned-in copy all use them. In memory only, like the rest.
 
 ### The model
 
@@ -396,8 +406,8 @@ All on GitHub's PC runners with the clips in `test-clips/`.
   built in the earlier private repository; 0.1.4 (background translation) is the first Release
   from this one, under the new application ID. Stage 2 started in 0.2.0 (player, look settings
   with live preview, timing offset, save and open `.srt`); stage 3 (the burned-in copy) in 0.3.0;
-  next: reword and nudge single lines. Not yet tried on a phone: copies of upright or HDR videos,
-  and how long a copy takes.
+  correcting single lines (words, timing, remove) in 0.4.0. Not yet tried on a phone: copies of
+  upright or HDR videos, how long a copy takes, and the line editing.
 - Faster transcription for long videos: large-v3 greedy for the language-model path since 0.1.6
   (about 20% faster with the same transcript on the public clips; turbo made mistakes). Speed on
   the phone not yet known.
