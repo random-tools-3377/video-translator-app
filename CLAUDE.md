@@ -76,6 +76,20 @@ audio somewhere.
   and none network: `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PROCESSING`,
   `FOREGROUND_SERVICE_DATA_SYNC`, `POST_NOTIFICATIONS` (asked once, at the first translation),
   `WAKE_LOCK`.
+- **The thread count follows the cores Android allows (since 0.1.5).** Off the screen, even with
+  the foreground service, Android lets the app run on fewer cores. ggml's threads wait for each
+  other by spinning, so more threads than allowed cores slows Whisper and the language model
+  to almost nothing off the screen (0.1.4 used a fixed count). `app/src/main/cpp/vt_cores.h` (`VtWhisperRun`, used by the app and
+  `tools/vt-transcribe`) checks `sched_getaffinity` from Whisper's abort callback at most twice a
+  second: with fewer cores than threads it stops `whisper_full` and starts again from the end of
+  the last line with fewer threads (the language already detected, times and progress offset);
+  with more cores it restarts at the next window boundary, where nothing is lost. The language
+  model (`vt_translate.h`) sets `llama_set_n_threads` before every `llama_decode`, decodes the
+  prompt one ubatch per call, and redoes a step its abort callback stopped for fewer cores
+  (llama.cpp drops an aborted ubatch from its memory); its thread pool has `poll = 0` so idle
+  threads sleep. CI's `language-model` job runs both tools with `VT_TEST_CORES_FLIP_S=30` (one
+  core during every other 30 s) and checks the lines, their times and the English, and that
+  Whisper did restart.
 
 ### Subtitles
 

@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "whisper.h"
+#include "vt_cores.h"
 #include "vt_params.h"
 #include "vt_speech.h"
 
@@ -85,6 +86,7 @@ struct Callbacks {
     bool language_sent = false;
     bool java_failed = false;
     const VtSpeech *speech = nullptr;  // set when Whisper hears only the speech: maps times back
+    VtWhisperRun *run = nullptr;       // the thread count, following the cores Android allows
     std::string last_key;   // the previous line, to drop a line Whisper repeats (vt_is_repeat)
     int dropped_repeats = 0;
 };
@@ -124,7 +126,7 @@ void on_progress(struct whisper_context * /*ctx*/, struct whisper_state *state, 
     if (cb->java_failed) return;
     send_language(cb, state);
     if (cb->java_failed) return;
-    cb->env->CallVoidMethod(cb->listener, cb->on_progress, static_cast<jint>(progress));
+    cb->env->CallVoidMethod(cb->listener, cb->on_progress, static_cast<jint>(cb->run->overall_progress(progress)));
     check_java(cb);
 }
 
@@ -137,15 +139,19 @@ void on_new_segment(struct whisper_context * /*ctx*/, struct whisper_state *stat
     for (int i = n - n_new; i < n && !cb->java_failed; ++i) {
         const char *text = whisper_full_get_segment_text_from_state(state, i);
         if (text == nullptr) text = "";
+        // Segment times are in units of 10 ms, in the audio Whisper heard, from where this
+        // whisper_full call started (later than 0 after a restart for another thread count).
+        int64_t cs0 = whisper_full_get_segment_t0_from_state(state, i);
+        int64_t cs1 = whisper_full_get_segment_t1_from_state(state, i);
+        cb->run->segment_end(cs1);
+        cs0 += cb->run->base_cs();
+        cs1 += cb->run->base_cs();
         std::string key = vt_line_key(text);
         if (vt_is_repeat(cb->last_key, key)) {
             cb->dropped_repeats++;
             continue;
         }
         if (!key.empty()) cb->last_key = std::move(key);
-        // Segment times are in units of 10 ms, in the audio Whisper heard.
-        int64_t cs0 = whisper_full_get_segment_t0_from_state(state, i);
-        int64_t cs1 = whisper_full_get_segment_t1_from_state(state, i);
         if (cb->speech != nullptr) {
             cs0 = cb->speech->to_video_cs(cs0);
             cs1 = cb->speech->to_video_cs(cs1);
@@ -164,8 +170,9 @@ void on_new_segment(struct whisper_context * /*ctx*/, struct whisper_state *stat
     }
 }
 
+// Also stops the call when the thread count must change (VtWhisperRun restarts it).
 bool on_abort(void *user_data) {
-    return static_cast<Job *>(user_data)->cancelled.load();
+    return static_cast<Callbacks *>(user_data)->run->should_stop();
 }
 
 bool on_encoder_begin(struct whisper_context * /*ctx*/, struct whisper_state * /*state*/, void *user_data) {
@@ -317,7 +324,11 @@ Java_app_videotranslator_whisper_WhisperNative_transcribe(
     params.encoder_begin_callback = on_encoder_begin;
     params.encoder_begin_callback_user_data = &cb;
     params.abort_callback = on_abort;
-    params.abort_callback_user_data = job;
+    params.abort_callback_user_data = &cb;
+    VtWhisperRun run;
+    run.wanted = params.n_threads;
+    run.cancelled = &job->cancelled;
+    cb.run = &run;
 
     if (job->cancelled.load()) return 1;
 
@@ -341,8 +352,11 @@ Java_app_videotranslator_whisper_WhisperNative_transcribe(
         }
     }
     if (job->cancelled.load()) return 1;
-    LOGI("transcribe: %d samples, %d threads, translate=%d", n, params.n_threads, params.translate ? 1 : 0);
-    const int rc = whisper_full(ctx, params, pcm, n);
+    LOGI("transcribe: %d samples, up to %d threads (%d cores allowed now), translate=%d",
+         n, params.n_threads, vt_allowed_cores(), params.translate ? 1 : 0);
+    const int rc = run.run(ctx, params, pcm, n);
+    if (run.restarts() > 0) LOGI("Whisper restarted %d times to follow the cores allowed; ended with %d threads",
+                                 run.restarts(), run.threads());
     if (cb.java_failed) return -102;  // the pending Java exception is thrown on return
     if (job->cancelled.load()) return 1;
     if (rc != 0) {

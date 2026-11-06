@@ -340,7 +340,7 @@ jobs:
     # The long checks run for a Release (or by hand): about 3 hours of runner time in all.
     if: contains(github.event.head_commit.message, '[release]') || github.event.inputs.release == 'true' || github.event.inputs.full == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -406,6 +406,10 @@ jobs:
           CLIPS_ONLY: ${{ matrix.clip }}
           LLM_TOOL: build/host-llm/vt-translate
           LLM_MODEL: models/llm/Qwen3.5-9B-Q4_K_M.gguf
+          # Both tools pretend only one core is allowed during every other 30 s, as Android does
+          # to the app off the screen: Whisper restarts with fewer threads and more again, the
+          # language model changes its thread count, and the lines, times and English must hold.
+          VT_TEST_CORES_FLIP_S: "30"
         run: >
           python3 -I scripts/check-translation.py build/host/vt-transcribe
           "$(scripts/fetch-models.sh --path release)" test-clips/clips.tsv build/clips "$(nproc)"

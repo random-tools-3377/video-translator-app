@@ -9,7 +9,10 @@
 //   LANG <code> <name>
 //   SEG <start_ms> <end_ms> <text>
 //   SPEECH <speech_ms> of <audio_ms> in <n> stretches, <ms> ms   (with --vad)
-//   TIME load_ms=.. run_ms=.. audio_ms=.. repeats_dropped=..
+//   TIME load_ms=.. run_ms=.. audio_ms=.. repeats_dropped=.. restarts=..
+// VT_TEST_CORES_FLIP_S=N: pretend Android allows only one core during every other N seconds, so
+// Whisper restarts with another thread count as in the app (vt_cores.h), for CI to check the
+// lines and times still come out right.
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "vt_cores.h"
 #include "vt_params.h"
 #include "vt_speech.h"
 
@@ -29,7 +33,21 @@ struct Seen {
     std::string last_key;
     int dropped = 0;
     const VtSpeech *speech = nullptr;
+    VtWhisperRun *run = nullptr;
 };
+
+static double g_flip_s = 0;
+static std::chrono::steady_clock::time_point g_started;
+
+// VT_TEST_CORES_FLIP_S: one core in every other period, all of them in between.
+static int flipping_cores() {
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_started).count();
+    return (static_cast<long>(s / g_flip_s) % 2 == 1) ? 1 : vt_allowed_cores();
+}
+
+static bool on_abort(void *user_data) {
+    return static_cast<Seen *>(user_data)->run->should_stop();
+}
 
 static int self_test() {
     VtSpeech sp;
@@ -56,11 +74,14 @@ static void on_segment(whisper_context *, whisper_state *state, int n_new, void 
     const int n = whisper_full_n_segments_from_state(state);
     for (int i = n - n_new; i < n; ++i) {
         const char *text = whisper_full_get_segment_text_from_state(state, i);
+        int64_t cs0 = whisper_full_get_segment_t0_from_state(state, i);
+        int64_t cs1 = whisper_full_get_segment_t1_from_state(state, i);
+        seen->run->segment_end(cs1);  // as the app does (whisper_jni.cpp)
+        cs0 += seen->run->base_cs();
+        cs1 += seen->run->base_cs();
         std::string key = vt_line_key(text);
         if (vt_is_repeat(seen->last_key, key)) { seen->dropped++; continue; }  // as the app does
         if (!key.empty()) seen->last_key = std::move(key);
-        int64_t cs0 = whisper_full_get_segment_t0_from_state(state, i);
-        int64_t cs1 = whisper_full_get_segment_t1_from_state(state, i);
         if (seen->speech != nullptr) {
             cs0 = seen->speech->to_video_cs(cs0);
             cs1 = seen->speech->to_video_cs(cs1);
@@ -123,7 +144,19 @@ int main(int argc, char **argv) {
     whisper_full_params params = vt_full_params(threads, translate, beam, context);
     params.new_segment_callback = on_segment;
     params.new_segment_callback_user_data = &seen;
-    const int rc = n > 0 ? whisper_full(ctx, params, audio, n) : 0;
+    params.abort_callback = on_abort;
+    params.abort_callback_user_data = &seen;
+    VtWhisperRun run;
+    run.wanted = params.n_threads;
+    if (const char *flip = getenv("VT_TEST_CORES_FLIP_S")) {
+        g_flip_s = atof(flip);
+        if (g_flip_s > 0) {
+            g_started = clock::now();
+            run.cores = flipping_cores;
+        }
+    }
+    seen.run = &run;
+    const int rc = n > 0 ? run.run(ctx, params, audio, n) : 0;
     const auto t2 = clock::now();
     if (rc != 0) { fprintf(stderr, "whisper_full failed: %d\n", rc); whisper_free(ctx); return 1; }
 
@@ -133,10 +166,10 @@ int main(int argc, char **argv) {
     } else {
         printf("LANG none no-speech\n");
     }
-    printf("TIME load_ms=%lld run_ms=%lld audio_ms=%lld repeats_dropped=%d beam=%d context=%d vad=%d\n",
+    printf("TIME load_ms=%lld run_ms=%lld audio_ms=%lld repeats_dropped=%d restarts=%d beam=%d context=%d vad=%d\n",
            (long long) std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(),
            (long long) std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count(),
-           (long long) (pcm.size() * 1000 / 16000), seen.dropped, beam, context ? 1 : 0, vad != nullptr ? 1 : 0);
+           (long long) (pcm.size() * 1000 / 16000), seen.dropped, run.restarts(), beam, context ? 1 : 0, vad != nullptr ? 1 : 0);
     whisper_free(ctx);
     return 0;
 }

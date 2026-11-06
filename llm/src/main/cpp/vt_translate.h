@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <sched.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -105,7 +107,24 @@ struct VtLlmStats {
     double output_ms = 0;
     double decode_ms = 0;  // of output_ms: the model's steps (the rest is choosing tokens)
     double sample_ms = 0;  // of output_ms: choosing each token within the grammar
+    int thread_changes = 0;  // times the thread count followed the cores allowed (vt_llm_cores)
 };
+
+// The CPU cores the calling thread may run on now; 0 if unknown. Android narrows this when the app
+// leaves the screen, and ggml's threads wait for each other by spinning, so more threads than
+// allowed cores makes every step wait for threads that are not running: the model slows to almost
+// nothing until the app is back. So the thread count follows this before every step (and a step
+// that finds fewer cores while it runs is stopped and redone with fewer threads). The same check
+// as vt_allowed_cores() in app/src/main/cpp/vt_cores.h, for Whisper.
+inline int vt_llm_allowed_cores() {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) return 0;
+    return CPU_COUNT(&set);
+}
+
+// Tests replace this to simulate Android (VT_TEST_CORES_FLIP_S in tools/vt-translate).
+inline int (*vt_llm_cores)() = vt_llm_allowed_cores;
 
 // A JSON array of exactly n strings -> out. False if it is anything else.
 inline bool vt_llm_parse_answer(const std::string &content, size_t n, std::vector<std::string> &out) {
@@ -246,6 +265,8 @@ class VtLlm {
         cp.n_seq_max = 1;
         cp.n_threads = threads;
         cp.n_threads_batch = threads;
+        m->wanted_threads_ = std::max(1, threads);
+        m->threads_ = m->wanted_threads_;
         cp.no_perf = false;
         m->ctx_ = llama_init_from_model(m->model_, cp);
         if (m->ctx_ == nullptr) {
@@ -254,7 +275,10 @@ class VtLlm {
         }
         // One thread pool kept for the model's lifetime, as llama.cpp's server sets up: without it,
         // every step starts and stops its own threads.
+        // Idle threads sleep at once instead of spinning for a while first (poll 0): when fewer
+        // cores are allowed, the pool's unused threads must not take turns on them.
         ggml_threadpool_params tpp = ggml_threadpool_params_default(threads);
+        tpp.poll = 0;
         m->threadpool_ = ggml_threadpool_new(&tpp);
         if (m->threadpool_ != nullptr) llama_attach_threadpool(m->ctx_, m->threadpool_, nullptr);
         m->set_cancel(cancel);
@@ -272,12 +296,13 @@ class VtLlm {
     }
 
     // The flag that stops a running translation (checked between tokens and inside llama.cpp).
+    // [cancel] stops the current step; so do fewer cores than threads (the step is then redone).
     void set_cancel(const std::atomic<bool> *cancel) {
         cancel_ = cancel;
         llama_set_abort_callback(ctx_, [](void *data) {
-            auto *c = static_cast<const std::atomic<bool> *>(data);
-            return c != nullptr && c->load();
-        }, const_cast<std::atomic<bool> *>(cancel));
+            auto *self = static_cast<VtLlm *>(data);
+            return self->cancelled() || self->fewer_cores_now();
+        }, this);
     }
 
     // Translates [lines] (in [language], e.g. "Japanese") to English. Calls
@@ -357,10 +382,12 @@ class VtLlm {
         // Prompt.
         llama_memory_clear(llama_get_memory(ctx_), true);
         const auto t0 = std::chrono::steady_clock::now();
-        for (size_t i = 0; i < prompt.size(); i += VT_LLM_N_BATCH) {
-            const int n = static_cast<int>(std::min<size_t>(VT_LLM_N_BATCH, prompt.size() - i));
+        // One ubatch per call (llama.cpp splits a batch into ubatches anyway), so a step stopped for
+        // fewer cores is redone whole: llama.cpp drops an aborted ubatch from its memory.
+        for (size_t i = 0; i < prompt.size(); i += VT_LLM_N_UBATCH) {
+            const int n = static_cast<int>(std::min<size_t>(VT_LLM_N_UBATCH, prompt.size() - i));
             llama_batch batch = llama_batch_get_one(const_cast<llama_token *>(prompt.data() + i), n);
-            const int rc = llama_decode(ctx_, batch);
+            const int rc = decode(batch, stats);
             if (cancelled()) return VT_LLM_CANCELLED;
             if (rc != 0) return VT_LLM_ERROR;
         }
@@ -401,7 +428,7 @@ class VtLlm {
             }
             llama_token next = id;
             const auto td = std::chrono::steady_clock::now();
-            const int rc = llama_decode(ctx_, llama_batch_get_one(&next, 1));
+            const int rc = decode(llama_batch_get_one(&next, 1), stats);
             stats.decode_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - td).count();
             if (cancelled()) return VT_LLM_CANCELLED;
             if (rc != 0) return VT_LLM_ERROR;
@@ -429,6 +456,38 @@ class VtLlm {
     VtLlm() = default;
 
     bool cancelled() const { return cancel_ != nullptr && cancel_->load(); }
+
+    int fit_threads() const {
+        const int allowed = vt_llm_cores != nullptr ? vt_llm_cores() : 0;
+        return allowed > 0 ? std::min(wanted_threads_, allowed) : threads_;
+    }
+
+    // From the abort callback (on the thread that called llama_decode), at most twice a second.
+    bool fewer_cores_now() {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_core_check_ < std::chrono::milliseconds(500)) return false;
+        last_core_check_ = now;
+        if (fit_threads() < threads_) fewer_cores_ = true;
+        return fewer_cores_;
+    }
+
+    // llama_decode with as many threads as cores allowed (up to the number asked for at load),
+    // redone with fewer when the cores allowed drop while it runs.
+    int decode(llama_batch batch, VtLlmStats &stats) {
+        for (int tries = 0;; ++tries) {
+            const int n = std::max(1, fit_threads());
+            if (n != threads_) {
+                threads_ = n;
+                llama_set_n_threads(ctx_, n, n);
+                stats.thread_changes++;
+            }
+            fewer_cores_ = false;
+            last_core_check_ = std::chrono::steady_clock::now();
+            const int rc = llama_decode(ctx_, batch);
+            if (rc == 2 && fewer_cores_ && !cancelled() && tries < 100) continue;
+            return rc;
+        }
+    }
 
     template <class OnChunk>
     int translate_range(const std::string &language, const std::vector<std::string> &lines, size_t first,
@@ -467,4 +526,8 @@ class VtLlm {
     ggml_threadpool *threadpool_ = nullptr;
     common_chat_templates_ptr tmpls_;
     const std::atomic<bool> *cancel_ = nullptr;
+    int wanted_threads_ = 4;   // asked for at load: every core the app may use, up to a cap
+    int threads_ = 4;          // used now
+    bool fewer_cores_ = false;
+    std::chrono::steady_clock::time_point last_core_check_{};
 };

@@ -17,6 +17,9 @@ Environment:
   LLM_TOOL=path LLM_MODEL=path   the app with a language model: Whisper writes down the spoken
                      language (--no-translate), then vt-translate turns non-English lines into
                      English with that model, keeping each line's time; the English is checked
+  VT_TEST_CORES_FLIP_S=N   passed on to both tools: they pretend only one core is allowed during
+                     every other N seconds, as Android does to an app off the screen, so Whisper
+                     restarts with fewer threads and more again (vt_cores.h); checked that it did
 """
 import csv, os, re, shlex, subprocess, sys, time
 
@@ -97,6 +100,14 @@ for row in rows:
         problems.append(f"only {latin:.0%} of letters are Latin: not English")
     if len(found) < need:
         problems.append(f"found {len(found)} of the expected words {expect} (need {need})")
+    backwards = [(a, b) for a, b in zip(segs, segs[1:]) if b[0] < a[0] - 1000 or b[1] < b[0]]
+    if backwards:
+        problems.append(f"line times go backwards: {backwards[0][0][:2]} then {backwards[0][1][:2]}")
+    flip = float(os.environ.get("VT_TEST_CORES_FLIP_S") or 0)
+    run_ms = int((re.search(r"run_ms=(\d+)", timing) or [None, "0"])[1])
+    restarts = int((re.search(r"restarts=(\d+)", timing) or [None, "0"])[1])
+    if flip > 0 and run_ms > 2.5 * flip * 1000 and restarts == 0:
+        problems.append(f"Whisper never restarted, although only one core was allowed after {flip:.0f} s")
     early = [s for s in segs if s[0] < quiet * 1000]
     if early:
         problems.append(f"{len(early)} line(s) start before {quiet:.0f} s, where there is no speech")

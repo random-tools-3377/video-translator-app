@@ -166,10 +166,11 @@ Java_app_videotranslator_llm_LlmNative_translate(JNIEnv *env, jclass, jlong hand
         }, stats);
     llm->set_cancel(nullptr);
 
-    LOGI("translated %d lines: %d requests, %d split, %d kept, prompt %lld tok in %.0f ms, output %lld tok in %.0f ms",
+    LOGI("translated %d lines: %d requests, %d split, %d kept, prompt %lld tok in %.0f ms, output %lld tok in %.0f ms, "
+         "thread count changed %d times to follow the cores allowed",
          static_cast<int>(n), stats.requests, stats.splits, stats.kept_original,
          static_cast<long long>(stats.prompt_tokens), stats.prompt_ms,
-         static_cast<long long>(stats.output_tokens), stats.output_ms);
+         static_cast<long long>(stats.output_tokens), stats.output_ms, stats.thread_changes);
     if (java_failed) return 1;
     env->CallVoidMethod(listener, on_stats, stats.requests, stats.splits, stats.kept_original,
                         static_cast<jlong>(stats.prompt_tokens), static_cast<jlong>(stats.prompt_ms),
