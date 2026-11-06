@@ -20,4 +20,9 @@ ffmpeg -nostdin -y -hide_banner -loglevel error \
   -c:a aac -b:a 128k -ar 44100 -ac 2 \
   -movflags +faststart \
   "$out"
-ffprobe -v error -show_entries stream=codec_name,sample_rate,channels,width,height -show_entries format=duration -of compact "$out"
+# What was made, when ffprobe is there (the static ffmpeg CI may use has none).
+if command -v ffprobe >/dev/null; then
+  ffprobe -v error -show_entries stream=codec_name,sample_rate,channels,width,height -show_entries format=duration -of compact "$out"
+else
+  ls -l "$out"
+fi

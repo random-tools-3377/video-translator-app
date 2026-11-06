@@ -5,8 +5,8 @@
 # apt-get from Ubuntu's mirror sometimes trickles: ffmpeg's ~80 packages once took over 20
 # minutes on two runners at the same time. So the first choice is the static ffmpeg inside the
 # imageio-ffmpeg wheel on PyPI (one download, pinned by sha256), kept only if it has the decoders
-# the clips need; apt-get is the fallback. It has no ffprobe, so scripts/make-test-video.sh still
-# uses the runner's own ffmpeg.
+# and encoders the tests need (the clips; the H.264/AAC test videos); apt-get is the fallback. It
+# has no ffprobe, which scripts/make-test-video.sh only uses to print what it made.
 set -euo pipefail
 
 if command -v ffmpeg >/dev/null; then
@@ -33,6 +33,11 @@ static_ok() {
   decoders=$("$dir/ffmpeg" -hide_banner -decoders 2>/dev/null) || return 1
   for d in vorbis mp3float pcm_s16le; do
     grep -q " $d " <<<"$decoders" || { echo "static ffmpeg has no $d decoder" >&2; return 1; }
+  done
+  local encoders
+  encoders=$("$dir/ffmpeg" -hide_banner -encoders 2>/dev/null) || return 1
+  for e in libx264 aac; do
+    grep -q " $e " <<<"$encoders" || { echo "static ffmpeg has no $e encoder" >&2; return 1; }
   done
   "$dir/ffmpeg" -hide_banner -version | head -n 1 >&2
 }

@@ -205,7 +205,8 @@ jobs:
 
       - name: Make the test videos (whisper.cpp's jfk.wav; the public Japanese UDHR clip)
         run: |
-          command -v ffmpeg >/dev/null || scripts/ci-apt-install.sh ffmpeg
+          ffmpeg_dir=$(scripts/ci-ffmpeg.sh)
+          [[ -z "$ffmpeg_dir" ]] || PATH="$ffmpeg_dir:$PATH"
           scripts/make-test-video.sh
           CLIPS_ONLY=ja-udhr scripts/fetch-test-clips.sh build/clips
           scripts/make-test-video.sh build/clips/ja-udhr.src app/src/androidTest/assets/ja-udhr.mp4 20
@@ -439,7 +440,7 @@ jobs:
 
       # QEMU through the kernel's binfmt handler, as Docker's own action sets it up (apt-get hung on
       # this runner image for over half an hour, twice). arm64 binaries then run directly, with
-      # QEMU_CPU=max for every feature the phone has. ffmpeg comes with the runner image.
+      # QEMU_CPU=max for every feature the phone has.
       - name: QEMU for arm64
         uses: docker/setup-qemu-action@v3
         with:
@@ -447,7 +448,9 @@ jobs:
 
       - name: ffmpeg
         timeout-minutes: 15
-        run: command -v ffmpeg >/dev/null || scripts/ci-apt-install.sh ffmpeg
+        run: |
+          ffmpeg_dir=$(scripts/ci-ffmpeg.sh)
+          [[ -z "$ffmpeg_dir" ]] || echo "$ffmpeg_dir" >> "$GITHUB_PATH"
 
       - name: Quantize the tiny model to q5_0, the app model's format
         run: |
