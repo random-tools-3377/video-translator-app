@@ -337,6 +337,24 @@ All on GitHub's PC runners with the clips in `test-clips/`.
     file in the phone's browser from Hugging Face, then imports it once; the app checks its sha256.
   - Decision: D with Qwen3.5-9B, Qwen3.5-4B as the smaller fallback if 9B is too slow or does not
     fit on the phone (0.1.3).
+- **Faster transcription for the language-model path** (manual "Experiment - faster
+  transcription", 4-vCPU runners, Whisper `--no-translate` with the speech detector, then
+  Qwen3.5-9B; Whisper's seconds, each way on the same runner):
+
+  | Clip | large-v3 beam 5 (app) | large-v3 greedy | turbo beam 5 | turbo greedy |
+  |---|---|---|---|---|
+  | ja-udhr (20 s) | 103 | 88 (-15%) | 76 (-26%) | 73 (-29%) |
+  | ja-botchan (45 s) | 92 | 72 (-22%) | 62 (-32%) | 57 (-38%) |
+  | ru-chekhov (40 s) | 169 | 138 (-18%) | 117 (-31%) | 111 (-34%) |
+  | ru-tolstoy (45 s) | 149 | 113 (-24%) | 95 (-36%) | 89 (-40%) |
+
+  large-v3 greedy wrote the same transcript as beam 5 on all four clips (so the same English).
+  large-v3-turbo (`ggml-large-v3-turbo-q5_0.bin`) was fine on the Japanese clips but heard
+  Chekhov's хересом as хирисом ("iris" for "sherry") and added a repeated last line, and on
+  Tolstoy wrote 15.7-45.0 s as one 30-second line (useless as a subtitle) and "LibriWalks". Short
+  clips are dominated by the encoder, which turbo shares with large-v3 (it has 4 decoder layers
+  instead of 32), so the saving on long speech may differ. Recommendation: greedy large-v3 for the
+  language-model path only; not turbo. The owner decides.
 
 ## Where things stand
 
@@ -344,9 +362,9 @@ All on GitHub's PC runners with the clips in `test-clips/`.
   built in the earlier private repository; 0.1.4 (background translation) is the first Release
   from this one, under the new application ID. Do not start stage 2 (the in-app player) until the
   owner says so.
-- Next: make transcription faster for long videos. Compare faster ways of writing the speech down for the
-  language-model path (large-v3 greedy, large-v3-turbo beam 5 and greedy) with the manual
-  `experiment-transcribe-speed.yml` workflow, then let the owner decide.
+- Faster transcription for long videos: compared on the public clips (see "Test results"):
+  large-v3 greedy is about 20% faster with the same transcript; turbo is faster still but makes
+  mistakes. Waiting for the owner's choice before changing the app.
 - Phone memory with Qwen3.5-9B beside Android is not known yet.
 - CI's `arm` job confirmed the phone's arm64 code gives the right English under QEMU with the
   q5_0 tiny model, using NEON, FP16_VA, DOTPROD and MATMUL_INT8 (about 4 minutes under emulation;
