@@ -2,7 +2,8 @@
 // vt-transcribe --self-test        checks the speech-to-video time mapping (vt_speech.h)
 //
 // AUDIO.f32 is raw little-endian float, 16 kHz mono (ffmpeg -ac 1 -ar 16000 -f f32le).
-// Runs with the app's settings (app/src/main/cpp/vt_params.h); --beam and --context override them
+// Runs with the app's settings (app/src/main/cpp/vt_params.h: beam 5 when translating, greedy with
+// --no-translate, as the app with a language model); --beam and --context override them
 // for comparisons. The app always uses the speech detector; pass --vad to do the same here.
 // Prints, for CI to check:
 //   SYSTEM <whisper system info>
@@ -100,7 +101,7 @@ int main(int argc, char **argv) {
     int threads = 4;
     bool translate = true;
     const char *vad = nullptr;
-    int beam = VT_APP_BEAM_SIZE;
+    int beam = -1;  // the app's choice (vt_app_beam_size), unless --beam
     bool context = VT_APP_USE_CONTEXT;
     for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "--vad") == 0 && i + 1 < argc) vad = argv[++i];
@@ -141,6 +142,7 @@ int main(int argc, char **argv) {
         n = static_cast<int>(speech.samples.size());
         seen.speech = &speech;
     }
+    if (beam < 0) beam = vt_app_beam_size(translate);
     whisper_full_params params = vt_full_params(threads, translate, beam, context);
     params.new_segment_callback = on_segment;
     params.new_segment_callback_user_data = &seen;

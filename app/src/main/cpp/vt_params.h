@@ -16,9 +16,21 @@ inline whisper_context_params vt_context_params() {
 }
 
 // 0: greedy decoding (one candidate per step, with whisper.cpp's temperature fallback). N > 0: beam
-// search with N candidates, slower but often better wording. The app uses this value:
-// accuracy matters more than speed (one run per video), so 5, as in whisper.cpp's own CLI.
+// search with N candidates, slower but often better wording. The app uses this value when Whisper
+// translates (no language model): accuracy matters more than speed (one run per video), so 5, as
+// in whisper.cpp's own CLI.
 constexpr int VT_APP_BEAM_SIZE = 5;
+
+// When Whisper only writes down the spoken language for the language model (translate off):
+// greedy. On the public clips it wrote exactly the same transcript as beam 5 in about 20% less
+// time (CLAUDE.md, "Faster transcription"); large-v3-turbo was faster still but made mistakes.
+constexpr int VT_APP_TRANSCRIBE_BEAM_SIZE = 0;
+
+// The app's beam size for a run: VT_APP_BEAM_SIZE when translating, VT_APP_TRANSCRIBE_BEAM_SIZE
+// when writing down the spoken language.
+constexpr int vt_app_beam_size(bool translate) {
+    return translate ? VT_APP_BEAM_SIZE : VT_APP_TRANSCRIBE_BEAM_SIZE;
+}
 
 // true: Whisper sees the text of the previous 30 s window while working on the next one, which
 // helps consistent wording (names, terms) but can let one mistake repeat. The app uses this value.
@@ -26,9 +38,11 @@ constexpr bool VT_APP_USE_CONTEXT = false;
 
 // The speech detector is not set here: it runs first, in vt_speech.h, and Whisper gets only the
 // speech (whisper.cpp's own vad option is left off; see vt_speech.h for why).
+// beam_size < 0: the app's choice for this run (vt_app_beam_size).
 inline whisper_full_params vt_full_params(int threads, bool translate,
-                                          int beam_size = VT_APP_BEAM_SIZE,
+                                          int beam_size = -1,
                                           bool use_context = VT_APP_USE_CONTEXT) {
+    if (beam_size < 0) beam_size = vt_app_beam_size(translate);
     whisper_full_params p = whisper_full_default_params(
         beam_size > 0 ? WHISPER_SAMPLING_BEAM_SEARCH : WHISPER_SAMPLING_GREEDY);
     if (beam_size > 0) p.beam_search.beam_size = beam_size;

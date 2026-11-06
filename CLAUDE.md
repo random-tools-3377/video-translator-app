@@ -246,8 +246,10 @@ write 0.5 tokens/s instead of 25. GitHub's standard runners have 4 vCPUs for a p
   `engine/Pipeline` is the video-to-lines path that both the app and the emulator test run;
   `engine/TranslationEngine` is the one job per process that the screen observes;
   `engine/TranslationService` keeps it running in the background.
-- Whisper settings: beam search 5 (`VT_APP_BEAM_SIZE = 5`, since 0.1.2; earlier builds used greedy
-  decoding with whisper.cpp's temperature fallback), no previous-window context
+- Whisper settings: beam search 5 when Whisper translates (`VT_APP_BEAM_SIZE = 5`, since 0.1.2;
+  earlier builds used greedy decoding with whisper.cpp's temperature fallback), greedy when it only
+  writes down the spoken language for the language model (`VT_APP_TRANSCRIBE_BEAM_SIZE = 0`, since
+  0.1.6: same transcript, about 20% faster on the public clips; `vt_app_beam_size()`), no previous-window context
   (`VT_APP_USE_CONTEXT = false`), `language = "auto"`, `translate` on (off with a language model),
   flash attention on, 6 threads, and whisper.cpp's Silero speech detector
   (`ggml-silero-v6.2.0.bin`, 885,098 bytes, sha256
@@ -353,8 +355,8 @@ All on GitHub's PC runners with the clips in `test-clips/`.
   Chekhov's хересом as хирисом ("iris" for "sherry") and added a repeated last line, and on
   Tolstoy wrote 15.7-45.0 s as one 30-second line (useless as a subtitle) and "LibriWalks". Short
   clips are dominated by the encoder, which turbo shares with large-v3 (it has 4 decoder layers
-  instead of 32), so the saving on long speech may differ. Recommendation: greedy large-v3 for the
-  language-model path only; not turbo. The owner decides.
+  instead of 32), so the saving on long speech may differ. Adopted in 0.1.6: greedy large-v3 for
+  the language-model path only; not turbo.
 
 ## Where things stand
 
@@ -362,9 +364,9 @@ All on GitHub's PC runners with the clips in `test-clips/`.
   built in the earlier private repository; 0.1.4 (background translation) is the first Release
   from this one, under the new application ID. Do not start stage 2 (the in-app player) until the
   owner says so.
-- Faster transcription for long videos: compared on the public clips (see "Test results"):
-  large-v3 greedy is about 20% faster with the same transcript; turbo is faster still but makes
-  mistakes. Waiting for the owner's choice before changing the app.
+- Faster transcription for long videos: large-v3 greedy for the language-model path since 0.1.6
+  (about 20% faster with the same transcript on the public clips; turbo made mistakes). Speed on
+  the phone not yet known.
 - Phone memory with Qwen3.5-9B beside Android is not known yet.
 - CI's `arm` job confirmed the phone's arm64 code gives the right English under QEMU with the
   q5_0 tiny model, using NEON, FP16_VA, DOTPROD and MATMUL_INT8 (about 4 minutes under emulation;

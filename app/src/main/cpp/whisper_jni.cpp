@@ -352,8 +352,9 @@ Java_app_videotranslator_whisper_WhisperNative_transcribe(
         }
     }
     if (job->cancelled.load()) return 1;
-    LOGI("transcribe: %d samples, up to %d threads (%d cores allowed now), translate=%d",
-         n, params.n_threads, vt_allowed_cores(), params.translate ? 1 : 0);
+    LOGI("transcribe: %d samples, up to %d threads (%d cores allowed now), translate=%d, beam=%d",
+         n, params.n_threads, vt_allowed_cores(), params.translate ? 1 : 0,
+         params.strategy == WHISPER_SAMPLING_BEAM_SEARCH ? params.beam_search.beam_size : 0);
     const int rc = run.run(ctx, params, pcm, n);
     if (run.restarts() > 0) LOGI("Whisper restarted %d times to follow the cores allowed; ended with %d threads",
                                  run.restarts(), run.threads());
