@@ -22,11 +22,13 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.videotranslator.engine.Phase
 import app.videotranslator.engine.TranslationEngine
+import app.videotranslator.export.ExportEngine
 import app.videotranslator.llm.LanguageModels
 import app.videotranslator.subtitles.SubtitleFiles
 import app.videotranslator.subtitles.SubtitleStyleStore
 import app.videotranslator.ui.AppTheme
 import app.videotranslator.ui.BusyDialog
+import app.videotranslator.ui.CopyActions
 import app.videotranslator.ui.MainScreen
 import app.videotranslator.ui.ModelActions
 import app.videotranslator.ui.PlayerScreen
@@ -68,6 +70,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         LanguageModels.refresh(this)
         SubtitleStyleStore.load(this)
+        ExportEngine.removeLeftovers(this)
         if (savedInstanceState == null) handleShare(intent)
 
         setContent {
@@ -75,6 +78,7 @@ class MainActivity : ComponentActivity() {
                 val state by TranslationEngine.state.collectAsStateWithLifecycle()
                 val modelState by LanguageModels.state.collectAsStateWithLifecycle()
                 val style by SubtitleStyleStore.style.collectAsStateWithLifecycle()
+                val exportState by ExportEngine.state.collectAsStateWithLifecycle()
                 val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
                     if (uri != null) request(uri)
                 }
@@ -142,6 +146,18 @@ class MainActivity : ComponentActivity() {
                         onStyleChange = { SubtitleStyleStore.set(this@MainActivity, it) },
                         onSaveSrt = subtitleActions.onSaveSrt,
                         onSaveText = subtitleActions.onSaveText,
+                        copy = CopyActions(
+                            state = exportState,
+                            onSave = {
+                                askForNotificationsOnce()
+                                ExportEngine.start(
+                                    this@MainActivity, watching.uri, watching.title, watching.lines, offsetMs, style,
+                                )
+                            },
+                            onCancel = { ExportEngine.cancel() },
+                            onOpen = { uri -> openVideo(uri) },
+                            onDismiss = { ExportEngine.clear() },
+                        ),
                         onBack = { watch = null },
                     )
                 } else {
@@ -203,6 +219,17 @@ class MainActivity : ComponentActivity() {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE))
         } catch (_: ActivityNotFoundException) {
             // No browser: nothing to do.
+        }
+    }
+
+    /** Opens a saved copy in the phone's video player or gallery. */
+    private fun openVideo(uri: Uri) {
+        try {
+            startActivity(
+                Intent(Intent.ACTION_VIEW).setDataAndType(uri, "video/mp4").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+            )
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "No app to play it; find it in your gallery under Movies/${ExportEngine.FOLDER}.", Toast.LENGTH_LONG).show()
         }
     }
 

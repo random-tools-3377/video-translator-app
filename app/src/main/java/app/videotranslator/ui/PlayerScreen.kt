@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -23,7 +24,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -56,6 +59,9 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import app.videotranslator.export.ExportEngine
+import app.videotranslator.export.ExportPhase
+import app.videotranslator.export.ExportState
 import app.videotranslator.subtitles.SubtitleEdge
 import app.videotranslator.subtitles.SubtitleFont
 import app.videotranslator.subtitles.SubtitleOverlayView
@@ -64,6 +70,15 @@ import app.videotranslator.subtitles.toCues
 import app.videotranslator.whisper.Segment
 import java.util.Locale
 import android.graphics.Color as AndroidColor
+
+/** Saving a copy with the subtitles burned in, as the player screen sees it. */
+class CopyActions(
+    val state: ExportState,
+    val onSave: () -> Unit,
+    val onCancel: () -> Unit,
+    val onOpen: (Uri) -> Unit,
+    val onDismiss: () -> Unit,
+)
 
 /** Plays the video the user picked (no copy is made) with the subtitles drawn over it. */
 @Composable
@@ -77,9 +92,11 @@ fun PlayerScreen(
     onStyleChange: (SubtitleStyle) -> Unit,
     onSaveSrt: () -> Unit,
     onSaveText: () -> Unit,
+    copy: CopyActions,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
+    var confirmCopy by remember { mutableStateOf(false) }
     val cues = remember(lines) { toCues(lines) }
     var styling by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -190,10 +207,36 @@ fun PlayerScreen(
                         onStyle = { styling = true },
                         onSaveSrt = onSaveSrt,
                         onSaveText = onSaveText,
+                        copy = copy,
+                        onSaveCopy = { confirmCopy = true },
                     )
                 }
             }
         }
+    }
+
+    if (confirmCopy) {
+        AlertDialog(
+            onDismissRequest = { confirmCopy = false },
+            title = { Text("Save a copy with the subtitles?") },
+            text = {
+                Text(
+                    "A new video with these subtitles burned in, looking exactly as here and with the timing " +
+                        "you set, goes to your gallery in Movies/${ExportEngine.FOLDER}. Your original video is " +
+                        "not changed. It takes a while for a long video; you can use other apps meanwhile.\n\n" +
+                        "Like any video in your gallery, a cloud backup (Samsung Cloud, Google Photos) may upload " +
+                        "the copy, subtitles included.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmCopy = false
+                    player.pause()
+                    copy.onSave()
+                }) { Text("Save copy") }
+            },
+            dismissButton = { TextButton(onClick = { confirmCopy = false }) { Text("Not now") } },
+        )
     }
 }
 
@@ -205,8 +248,12 @@ private fun Controls(
     onStyle: () -> Unit,
     onSaveSrt: () -> Unit,
     onSaveText: () -> Unit,
+    copy: CopyActions,
+    onSaveCopy: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+    Column(Modifier.fillMaxWidth().heightIn(max = 380.dp).verticalScroll(rememberScrollState()).padding(16.dp)) {
+        CopySection(copy, onSaveCopy)
+        Spacer(Modifier.height(12.dp))
         Text("Subtitle timing: ${offsetLabel(offsetMs)}", style = MaterialTheme.typography.bodyMedium)
         Text(
             "If every line comes too late, move them all earlier (and the other way round).",
@@ -234,6 +281,43 @@ private fun Controls(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@Composable
+private fun CopySection(copy: CopyActions, onSaveCopy: () -> Unit) {
+    val s = copy.state
+    when (s.phase) {
+        ExportPhase.Idle -> Button(onClick = onSaveCopy) { Text("Save a copy with the subtitles") }
+        ExportPhase.Working -> {
+            Text("Saving a copy with the subtitles… ${(s.progress * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(4.dp))
+            LinearProgressIndicator(progress = { s.progress }, modifier = Modifier.fillMaxWidth())
+            TextButton(onClick = copy.onCancel) { Text("Cancel") }
+        }
+        ExportPhase.Saving -> {
+            Text("Putting the copy in the gallery…", style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(4.dp))
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+        ExportPhase.Done -> {
+            Text(
+                "Saved to your gallery, in Movies/${ExportEngine.FOLDER}.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Row {
+                s.savedUri?.let { uri -> TextButton(onClick = { copy.onOpen(uri) }) { Text("Open it") } }
+                TextButton(onClick = copy.onDismiss) { Text("OK") }
+            }
+        }
+        ExportPhase.Cancelled, ExportPhase.Failed -> {
+            Text(
+                if (s.phase == ExportPhase.Cancelled) "Stopped. No copy was saved." else s.error ?: "The copy could not be made.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (s.phase == ExportPhase.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+            )
+            TextButton(onClick = copy.onDismiss) { Text("OK") }
+        }
     }
 }
 

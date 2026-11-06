@@ -147,6 +147,9 @@ dependencies {
     // The in-app player (plays the picked file; no network: CI checks the APK has no such permission).
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.ui)
+    // The copy with subtitles burned in (Transformer re-encodes the picture with an overlay).
+    implementation(libs.androidx.media3.transformer)
+    implementation(libs.androidx.media3.effect)
 
     testImplementation(libs.junit)
 

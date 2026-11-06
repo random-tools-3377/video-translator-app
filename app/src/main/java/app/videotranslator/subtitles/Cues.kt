@@ -45,7 +45,11 @@ fun toCues(lines: List<Segment>): List<Cue> {
 }
 
 /** The cue to show at [positionMs], with every cue moved by [offsetMs] (later when positive). */
-fun cueAt(cues: List<Cue>, positionMs: Long, offsetMs: Long = 0): Cue? {
+fun cueAt(cues: List<Cue>, positionMs: Long, offsetMs: Long = 0): Cue? =
+    cueIndexAt(cues, positionMs, offsetMs).let { if (it < 0) null else cues[it] }
+
+/** The index of [cueAt]'s cue in [cues], or -1 when nothing is shown at [positionMs]. */
+fun cueIndexAt(cues: List<Cue>, positionMs: Long, offsetMs: Long = 0): Int {
     val t = positionMs - offsetMs
     // Binary search on start times: the last cue that starts at or before t.
     var lo = 0
@@ -60,9 +64,8 @@ fun cueAt(cues: List<Cue>, positionMs: Long, offsetMs: Long = 0): Cue? {
             hi = mid - 1
         }
     }
-    if (found < 0) return null
-    val cue = cues[found]
-    return if (t < cue.endMs) cue else null
+    if (found < 0) return -1
+    return if (t < cues[found].endMs) found else -1
 }
 
 /**

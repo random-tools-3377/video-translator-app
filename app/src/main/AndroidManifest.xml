@@ -54,5 +54,11 @@
             android:name=".engine.TranslationService"
             android:exported="false"
             android:foregroundServiceType="mediaProcessing|dataSync" />
+
+        <!-- Saving a copy with subtitles burned in (export/ExportService), the same way. -->
+        <service
+            android:name=".export.ExportService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProcessing|dataSync" />
     </application>
 </manifest>

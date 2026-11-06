@@ -133,6 +133,21 @@ audio somewhere.
   handles rotation itself (`configChanges`), so playback survives turning the phone. Unit tests:
   `app/src/test/.../subtitles/SubtitlesTest.kt`. Still to do in stage 2: reword a line, nudge one
   line's start and end.
+- **Done in 0.3.0 (stage 3, before the rest of stage 2):** `export/SubtitledCopy` runs Media3
+  Transformer on the picked URI with an
+  `OverlayEffect` whose `SubtitleOverlay` (a `BitmapOverlay`) draws each frame's cue with
+  `SubtitleRenderer` onto a transparent bitmap the size of the frame (from `configure()`, with
+  MediaMetadataRetriever's rotated size as the fallback); a new bitmap only when the cue changes,
+  because Media3 uploads a bitmap again only when it is a different object. Video re-encoded at its
+  own size and frame rate, audio passed through. Output goes to `cacheDir/subtitled-copy.mp4`
+  (Transformer needs a file path), then `export/ExportEngine` copies it into MediaStore
+  (`Movies/Video Translator`, `IS_PENDING` while writing; no permission for the app's own files)
+  and deletes the cache file (also at start-up, if a crash left it). `export/ExportService` is a
+  foreground service like TranslationService (progress, Cancel, wake lock, "saved"
+  notification). The confirmation dialog says the gallery copy may be uploaded by cloud backup.
+  `SubtitledCopyTest` (emulator) makes a copy of jfk.mp4 and checks picture and sound tracks, same
+  size and length, and white subtitle pixels at the bottom (none at the top, none in the
+  original).
 
 ### The model
 
@@ -380,8 +395,9 @@ All on GitHub's PC runners with the clips in `test-clips/`.
 - Stage 1 (English transcript) is in use, with the optional language model. 0.1.0–0.1.3 were
   built in the earlier private repository; 0.1.4 (background translation) is the first Release
   from this one, under the new application ID. Stage 2 started in 0.2.0 (player, look settings
-  with live preview, timing offset, save and open `.srt`); next: reword and nudge single lines,
-  then stage 3 (the burned-in copy).
+  with live preview, timing offset, save and open `.srt`); stage 3 (the burned-in copy) in 0.3.0;
+  next: reword and nudge single lines. Not yet tried on a phone: copies of upright or HDR videos,
+  and how long a copy takes.
 - Faster transcription for long videos: large-v3 greedy for the language-model path since 0.1.6
   (about 20% faster with the same transcript on the public clips; turbo made mistakes). Speed on
   the phone not yet known.
