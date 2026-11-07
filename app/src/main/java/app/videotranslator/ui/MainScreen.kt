@@ -290,6 +290,10 @@ private fun JobScreen(
                     TextButton(onClick = subtitleActions.onSaveText) { Text("Save text") }
                 }
             }
+            if (!working) {
+                // Also here, not only on the first screen: after a translation the app stays on this one.
+                TextButton(onClick = subtitleActions.onOpenSaved) { Text("Watch a video with subtitles you saved") }
+            }
         }
         HorizontalDivider()
         Lines(
