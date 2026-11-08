@@ -56,17 +56,18 @@ class VideoToEnglishTest {
         val rec = Recorder()
         val started = System.nanoTime()
         val result = video().use { pipeline().run(it, rec, Cancellation()) }
+        val audio = result.audio!!
         val seconds = (System.nanoTime() - started) / 1e9
         val text = rec.lines.joinToString(" ") { it.text }
         Log.i(TAG, "took %.1f s; language=%s; audio %s %d Hz x%d; %d samples at 16 kHz; text: %s".format(
-            seconds, rec.language, result.audio.mime, result.audio.sampleRate, result.audio.channels,
-            result.audio.outputSamples, text))
+            seconds, rec.language, audio.mime, audio.sampleRate, audio.channels,
+            audio.outputSamples, text))
 
         // The decode path: AAC, resampled 44.1 kHz stereo -> 16 kHz mono, 11 s long.
-        assertEquals("audio/mp4a-latm", result.audio.mime)
-        assertEquals(44_100, result.audio.sampleRate)
-        assertEquals(2, result.audio.channels)
-        val seconds16k = result.audio.outputSamples / 16_000.0
+        assertEquals("audio/mp4a-latm", audio.mime)
+        assertEquals(44_100, audio.sampleRate)
+        assertEquals(2, audio.channels)
+        val seconds16k = audio.outputSamples / 16_000.0
         assertTrue("decoded $seconds16k s of audio, expected about 11", seconds16k in 10.5..11.6)
         assertTrue("duration ${rec.durationMs}", rec.durationMs!! in 10_500L..11_600L)
 

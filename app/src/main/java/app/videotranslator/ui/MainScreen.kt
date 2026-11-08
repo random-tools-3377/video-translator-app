@@ -66,6 +66,16 @@ class SubtitleActions(
     val onRemoveLine: (Int) -> Unit,
 )
 
+/** A translation that stopped before the end, and the result itself. */
+class JobActions(
+    /** Carry on from where it stopped. */
+    val onCarryOn: () -> Unit,
+    /** Pick the same video again, when the app can no longer open it, and carry on. */
+    val onPickAgain: () -> Unit,
+    /** Forget this result (and the kept copy of it) and go back to the start screen. */
+    val onClose: () -> Unit,
+)
+
 /** What the start screen's language-model section can ask for. */
 class ModelActions(
     val onDownload: (KnownModel) -> Unit,
@@ -83,6 +93,7 @@ fun MainScreen(
     onCancel: () -> Unit,
     modelActions: ModelActions,
     subtitleActions: SubtitleActions,
+    jobActions: JobActions,
 ) {
     val working = state.phase == Phase.Working
     val importing = modelState.importing != null
@@ -100,7 +111,7 @@ fun MainScreen(
         if (state.phase == Phase.Idle) {
             StartScreen(Modifier.padding(padding), modelState, onPick, modelActions, subtitleActions)
         } else {
-            JobScreen(Modifier.padding(padding), state, onPick, onCancel, subtitleActions)
+            JobScreen(Modifier.padding(padding), state, onPick, onCancel, subtitleActions, jobActions)
         }
     }
 }
@@ -222,8 +233,10 @@ private fun JobScreen(
     onPick: () -> Unit,
     onCancel: () -> Unit,
     subtitleActions: SubtitleActions,
+    jobActions: JobActions,
 ) {
     val working = state.phase == Phase.Working
+    var confirmClose by remember { mutableStateOf(false) }
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     if (working) {
         LaunchedEffect(state.startedAtMs) {
@@ -290,10 +303,38 @@ private fun JobScreen(
                     TextButton(onClick = subtitleActions.onSaveText) { Text("Save text") }
                 }
             }
+            if (state.canCarryOn) {
+                Spacer(Modifier.height(8.dp))
+                if (state.needsVideoAgain) {
+                    Button(onClick = jobActions.onPickAgain) { Text("Pick the same video again") }
+                } else {
+                    Button(onClick = jobActions.onCarryOn) { Text("Carry on from where it stopped") }
+                }
+            }
             if (!working) {
                 // Also here, not only on the first screen: after a translation the app stays on this one.
                 TextButton(onClick = subtitleActions.onOpenSaved) { Text("Watch a video with subtitles you saved") }
+                TextButton(onClick = { confirmClose = true }) { Text("Close this result") }
             }
+        }
+        if (confirmClose) {
+            AlertDialog(
+                onDismissRequest = { confirmClose = false },
+                title = { Text("Close this result?") },
+                text = {
+                    Text(
+                        "These lines and any corrections are forgotten, and the app goes back to the start. " +
+                            "To keep them, save the subtitles (.srt) or a copy of the video first.",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmClose = false
+                        jobActions.onClose()
+                    }) { Text("Close") }
+                },
+                dismissButton = { TextButton(onClick = { confirmClose = false }) { Text("Keep it") } },
+            )
         }
         HorizontalDivider()
         Lines(
@@ -333,9 +374,15 @@ private fun StatusLine(state: JobState, elapsedMs: Long) {
             }
             if (state.lines.isEmpty()) append(" No speech was found.")
         }
-        Phase.Cancelled -> {
-            val more = if (state.lines.isNotEmpty()) " The lines so far are below." else ""
-            "Cancelled after ${formatDuration(elapsedMs)}.$more"
+        Phase.Cancelled -> when {
+            state.error != null -> state.error
+            state.restored -> stoppedAt(state) +
+                " The app was closed before it finished (Android allows long work in the background only " +
+                "for a while). What was done is kept below; carry on to finish it."
+            else -> {
+                val more = if (state.lines.isNotEmpty()) " The lines so far are below." else ""
+                "Cancelled after ${formatDuration(elapsedMs)}.$more"
+            }
         }
         Phase.Failed -> state.error ?: "Something went wrong."
         Phase.Idle -> ""
@@ -345,6 +392,12 @@ private fun StatusLine(state: JobState, elapsedMs: Long) {
         style = MaterialTheme.typography.bodyMedium,
         color = if (state.phase == Phase.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
     )
+}
+
+/** "Stopped at 12:34 of 23:58." */
+private fun stoppedAt(state: JobState): String {
+    val of = state.durationMs?.let { " of ${formatClock(it)}" } ?: ""
+    return if (state.whisperDone) "Stopped while translating into English." else "Stopped at ${formatClock(state.reachedMs)}$of."
 }
 
 @Composable

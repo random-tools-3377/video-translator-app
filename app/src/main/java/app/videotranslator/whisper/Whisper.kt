@@ -146,6 +146,10 @@ fun WhisperModel.transcribe(
     threads: Int = DEFAULT_THREADS,
     translate: Boolean = true,
     speechDetector: File? = null,
+    /** Carry on from here (ms into the audio) after a stopped run; 0 starts at the beginning. */
+    startMs: Long = 0,
+    /** The language code found before, when carrying on (not detected again from the middle). */
+    language: String? = null,
 ) {
     if (cancellation.isCancelled) throw CancelledException()
     val bridge = object : WhisperNative.Listener {
@@ -157,7 +161,7 @@ fun WhisperModel.transcribe(
         }
     }
     val rc = cancellation.withNativeJob { job ->
-        WhisperNative.transcribe(handle, audio.pointer, job, threads, translate, speechDetector?.path, bridge)
+        WhisperNative.transcribe(handle, audio.pointer, job, threads, translate, speechDetector?.path, startMs, language, bridge)
     }
     when {
         rc == WhisperNative.RESULT_CANCELLED || cancellation.isCancelled -> throw CancelledException()

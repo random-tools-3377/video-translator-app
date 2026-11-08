@@ -1,5 +1,7 @@
 // vt-transcribe MODEL AUDIO.f32 [THREADS] [--vad VAD_MODEL] [--beam N] [--context|--no-context] [--no-translate]
 // vt-transcribe --self-test        checks the speech-to-video time mapping (vt_speech.h)
+// --from-ms N --language xx: carry on from N ms into the audio with the language already known, as
+// the app does after a stopped run.
 //
 // AUDIO.f32 is raw little-endian float, 16 kHz mono (ffmpeg -ac 1 -ar 16000 -f f32le).
 // Runs with the app's settings (app/src/main/cpp/vt_params.h: beam 5 when translating, greedy with
@@ -66,6 +68,16 @@ static int self_test() {
     }
     VtSpeech none;
     if (none.to_video_cs(123) != 123) { printf("empty map changed a time\n"); bad++; }
+    // And back: video times to times in the speech, for carrying on a stopped run.
+    sp.samples.resize(static_cast<size_t>(14 * sr + sr / 10));
+    struct { int64_t video, want; } back[] = {
+        {0, 0}, {4000, 0}, {4450, 450}, {4899, 899}, {5500, 910}, {7000, 910}, {7190, 1100}, {9999, 1410},
+    };
+    for (auto &c : back) {
+        const int64_t got = sp.to_speech_cs(c.video);
+        if (got != c.want) { printf("back %lld -> %lld, want %lld\n", (long long) c.video, (long long) got, (long long) c.want); bad++; }
+    }
+    if (none.to_speech_cs(321) != 321) { printf("empty map changed a time back\n"); bad++; }
     printf(bad ? "self-test FAILED\n" : "self-test passed\n");
     return bad ? 1 : 0;
 }
@@ -103,12 +115,16 @@ int main(int argc, char **argv) {
     const char *vad = nullptr;
     int beam = -1;  // the app's choice (vt_app_beam_size), unless --beam
     bool context = VT_APP_USE_CONTEXT;
+    long long from_ms = 0;
+    std::string language;
     for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "--vad") == 0 && i + 1 < argc) vad = argv[++i];
         else if (strcmp(argv[i], "--beam") == 0 && i + 1 < argc) beam = atoi(argv[++i]);
         else if (strcmp(argv[i], "--context") == 0) context = true;
         else if (strcmp(argv[i], "--no-context") == 0) context = false;
         else if (strcmp(argv[i], "--no-translate") == 0) translate = false;
+        else if (strcmp(argv[i], "--from-ms") == 0 && i + 1 < argc) from_ms = atoll(argv[++i]);
+        else if (strcmp(argv[i], "--language") == 0 && i + 1 < argc) language = argv[++i];
         else threads = atoi(argv[i]);
     }
     whisper_log_set(quiet_log, nullptr);
@@ -144,6 +160,7 @@ int main(int argc, char **argv) {
     }
     if (beam < 0) beam = vt_app_beam_size(translate);
     whisper_full_params params = vt_full_params(threads, translate, beam, context);
+    if (!language.empty()) params.language = language.c_str();
     params.new_segment_callback = on_segment;
     params.new_segment_callback_user_data = &seen;
     params.abort_callback = on_abort;
@@ -158,7 +175,8 @@ int main(int argc, char **argv) {
         }
     }
     seen.run = &run;
-    const int rc = n > 0 ? run.run(ctx, params, audio, n) : 0;
+    const int64_t start_cs = from_ms > 0 ? (seen.speech != nullptr ? speech.to_speech_cs(from_ms / 10) : from_ms / 10) : 0;
+    const int rc = n > 0 ? run.run(ctx, params, audio, n, start_cs) : 0;
     const auto t2 = clock::now();
     if (rc != 0) { fprintf(stderr, "whisper_full failed: %d\n", rc); whisper_free(ctx); return 1; }
 

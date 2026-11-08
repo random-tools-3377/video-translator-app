@@ -78,12 +78,13 @@ public:
         return stop_;
     }
 
-    // whisper_full over pcm[0, n), restarted with another thread count whenever needed. Returns
-    // whisper_full's result for the last call (0 when everything was heard).
-    int run(whisper_context *ctx, whisper_full_params params, const float *pcm, int n) {
+    // whisper_full over pcm[start_cs, n), restarted with another thread count whenever needed.
+    // start_cs (10 ms units) carries on a run that was stopped. Returns whisper_full's result for
+    // the last call (0 when everything was heard).
+    int run(whisper_context *ctx, whisper_full_params params, const float *pcm, int n, int64_t start_cs = 0) {
         total_ = n;
-        base_cs_ = 0;
-        end_cs_ = 0;
+        base_cs_ = std::max<int64_t>(start_cs, 0);
+        end_cs_ = base_cs_;
         restarts_ = 0;
         any_segment_ = false;
         threads_ = fit_threads();

@@ -29,6 +29,7 @@ import app.videotranslator.subtitles.SubtitleStyleStore
 import app.videotranslator.ui.AppTheme
 import app.videotranslator.ui.BusyDialog
 import app.videotranslator.ui.CopyActions
+import app.videotranslator.ui.JobActions
 import app.videotranslator.ui.MainScreen
 import app.videotranslator.ui.ModelActions
 import app.videotranslator.ui.PlayerScreen
@@ -75,6 +76,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         LanguageModels.refresh(this)
         SubtitleStyleStore.load(this)
+        // A translation kept from before the app was closed: finished, or to carry on.
+        TranslationEngine.restore(this)
         ExportEngine.removeLeftovers(this)
         if (savedInstanceState == null) handleShare(intent)
 
@@ -85,7 +88,18 @@ class MainActivity : ComponentActivity() {
                 val style by SubtitleStyleStore.style.collectAsStateWithLifecycle()
                 val exportState by ExportEngine.state.collectAsStateWithLifecycle()
                 val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-                    if (uri != null) request(uri)
+                    if (uri != null) {
+                        keepAccess(uri)
+                        request(uri)
+                    }
+                }
+                // The same video again, when the app can no longer open it to carry on.
+                val pickAgain = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+                    if (uri != null) {
+                        keepAccess(uri)
+                        askForNotificationsOnce()
+                        TranslationEngine.resume(this@MainActivity, uri)
+                    }
                 }
                 // The language model file, picked once from Downloads. Read once, copied in, checked.
                 val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -190,6 +204,19 @@ class MainActivity : ComponentActivity() {
                             onRemove = { LanguageModels.remove(this@MainActivity) },
                         ),
                         subtitleActions = subtitleActions,
+                        jobActions = JobActions(
+                            onCarryOn = {
+                                askForNotificationsOnce()
+                                TranslationEngine.resume(this@MainActivity)
+                            },
+                            onPickAgain = {
+                                pickAgain.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+                            },
+                            onClose = {
+                                offsetMs = 0
+                                TranslationEngine.clear()
+                            },
+                        ),
                     )
                 }
 
@@ -234,6 +261,18 @@ class MainActivity : ComponentActivity() {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE))
         } catch (_: ActivityNotFoundException) {
             // No browser: nothing to do.
+        }
+    }
+
+    /**
+     * Keeps permission to read this one video after the app is closed, so a translation Android
+     * stopped can carry on. Given back when the result is closed or another video is started.
+     */
+    private fun keepAccess(uri: Uri) {
+        try {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (_: SecurityException) {
+            // Not offered for this video: carrying on will ask for it to be picked again.
         }
     }
 

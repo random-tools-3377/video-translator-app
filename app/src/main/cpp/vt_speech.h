@@ -34,6 +34,19 @@ struct VtSpeech {
         const int64_t offset = std::min(std::max<int64_t>(s - b.speech_start, 0), b.length);
         return (b.video_start + offset) * 100 / WHISPER_SAMPLE_RATE;
     }
+
+    // The other way: a video time (centiseconds) as centiseconds into `samples`, to carry on from
+    // there. A time between two stretches maps to the start of the later one; past the last, to
+    // the end.
+    int64_t to_speech_cs(int64_t video_cs) const {
+        if (blocks.empty()) return video_cs;
+        const int64_t v = video_cs * WHISPER_SAMPLE_RATE / 100;
+        for (const Block &b : blocks) {
+            if (v < b.video_start) return b.speech_start * 100 / WHISPER_SAMPLE_RATE;
+            if (v < b.video_start + b.length) return (b.speech_start + (v - b.video_start)) * 100 / WHISPER_SAMPLE_RATE;
+        }
+        return static_cast<int64_t>(samples.size()) * 100 / WHISPER_SAMPLE_RATE;
+    }
 };
 
 // Keep pauses shorter than 2 s (they are part of talking), and pad each stretch by 400 ms so the

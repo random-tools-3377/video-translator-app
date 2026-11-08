@@ -41,6 +41,10 @@ internal object WhisperNative {
         threads: Int,
         translate: Boolean,
         vadModelPath: String?,
+        /** Carry on from here (ms into the audio) after a stopped run; 0 from the start. */
+        startMs: Long,
+        /** The language already detected, when carrying on; null to detect it. */
+        language: String?,
         listener: Listener,
     ): Int
 }

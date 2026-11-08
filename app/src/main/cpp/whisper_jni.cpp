@@ -291,7 +291,8 @@ Java_app_videotranslator_whisper_WhisperNative_freeJob(JNIEnv *, jclass, jlong h
 JNIEXPORT jint JNICALL
 Java_app_videotranslator_whisper_WhisperNative_transcribe(
         JNIEnv *env, jclass, jlong ctx_handle, jlong audio_handle, jlong job_handle,
-        jint threads, jboolean translate, jstring vad_model_path, jobject listener) {
+        jint threads, jboolean translate, jstring vad_model_path, jlong start_ms, jstring language,
+        jobject listener) {
     auto *ctx = reinterpret_cast<whisper_context *>(ctx_handle);
     auto *audio = reinterpret_cast<Audio *>(audio_handle);
     auto *job = reinterpret_cast<Job *>(job_handle);
@@ -316,7 +317,16 @@ Java_app_videotranslator_whisper_WhisperNative_transcribe(
         vad_path = chars;
         env->ReleaseStringUTFChars(vad_model_path, chars);
     }
+    // Carrying on a stopped run: the language found then (not detected again from the middle).
+    std::string lang;
+    if (language != nullptr) {
+        const char *chars = env->GetStringUTFChars(language, nullptr);
+        if (chars == nullptr) return -103;
+        lang = chars;
+        env->ReleaseStringUTFChars(language, chars);
+    }
     whisper_full_params params = vt_full_params(threads, translate == JNI_TRUE);
+    if (!lang.empty() && whisper_lang_id(lang.c_str()) >= 0) params.language = lang.c_str();
     params.new_segment_callback = on_new_segment;
     params.new_segment_callback_user_data = &cb;
     params.progress_callback = on_progress;
@@ -355,7 +365,10 @@ Java_app_videotranslator_whisper_WhisperNative_transcribe(
     LOGI("transcribe: %d samples, up to %d threads (%d cores allowed now), translate=%d, beam=%d",
          n, params.n_threads, vt_allowed_cores(), params.translate ? 1 : 0,
          params.strategy == WHISPER_SAMPLING_BEAM_SEARCH ? params.beam_search.beam_size : 0);
-    const int rc = run.run(ctx, params, pcm, n);
+    // start_ms is in the audio's timeline; Whisper hears only the speech, so map it there.
+    const int64_t start_cs = start_ms > 0 ? (cb.speech != nullptr ? cb.speech->to_speech_cs(start_ms / 10) : start_ms / 10) : 0;
+    if (start_cs > 0) LOGI("carrying on from %lld ms of the audio", static_cast<long long>(start_ms));
+    const int rc = run.run(ctx, params, pcm, n, start_cs);
     if (run.restarts() > 0) LOGI("Whisper restarted %d times to follow the cores allowed; ended with %d threads",
                                  run.restarts(), run.threads());
     if (cb.java_failed) return -102;  // the pending Java exception is thrown on return

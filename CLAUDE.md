@@ -35,8 +35,11 @@ audio somewhere.
 - **Nothing is kept unless the user saves it.** Subtitles live in memory. They reach storage only
   when the user saves a subtitle file (system save dialog, `CreateDocument`) or a subtitled copy
   (written to the gallery through `MediaStore`, which needs no permission for the app's own files).
-  The only things the app keeps by itself are the subtitle *style* and the language model file the
-  user loads (below), neither of which says anything about any video.
+  The only things the app keeps by itself are the subtitle *style*, the language model file the
+  user loads (below), and (since 0.5.0, the owner's decision) the one translation in progress or
+  just finished: `engine/JobStore` keeps its lines in no-backup private storage so a run Android
+  stops can carry on and a result survives the app closing, plus a persisted read permission for
+  that one video; both go when the user closes the result or starts another video.
   `android:allowBackup="false"` and data-extraction rules that exclude everything, so a Samsung or
   Google backup has nothing to take from the app. No analytics, no crash reporter, no Play
   Services.
@@ -157,7 +160,23 @@ audio somewhere.
   index with `lines`, and the dialog and list show it under the English when they differ (the
   language model's translations). Corrections go to `TranslationEngine.editLine/removeLine` when
   the lines are the job's (`Watch.fromJob`), else to the watched file's lines, so the player,
-  `.srt`/`.txt` and the burned-in copy all use them. In memory only, like the rest.
+  `.srt`/`.txt` and the burned-in copy all use them.
+- **Done in 0.5.0 (carry on after a stop):** Android's 6-hour daily limit for `mediaProcessing`
+  and `dataSync` services (and low-memory kills) can stop a long run, which used to lose
+  everything. `engine/JobStore` writes the job (URI, name, duration, language, lines, `spoken`,
+  `translated` count, `whisperDone`, timings) as JSON to `noBackupFilesDir/job.json` (written to a
+  `.tmp` file and renamed) after every line, every translated group, every edit and at the end;
+  `TranslationEngine.restore` reads it at start-up (a run that was working comes back as
+  `Cancelled` with `restored`). `TranslationEngine.resume` builds a `Resume` for
+  `Pipeline.run`: Whisper carries on from the end of the last kept line (JNI `startMs` in the
+  audio's timeline, mapped into the speech by `VtSpeech::to_speech_cs`, and the language found
+  before so it is not detected again from the middle; `VtWhisperRun::run(..., start_cs)`), and the
+  language model translates only lines from `translated` on; with `whisperDone` the video is not
+  even opened. The picker's URI gets `takePersistableUriPermission`, released on Close or a new
+  job; when the video can no longer be opened the user picks it again and the duration must
+  match within 1.5 s. `CarryOnTest` (emulator) checks the store round trip and a carry-on from
+  9 s of ja-udhr.mp4; `vt-transcribe --self-test` checks the inverse time mapping, and
+  `--from-ms`/`--language` carry on from the command line.
 
 ### The model
 
@@ -406,8 +425,10 @@ All on GitHub's PC runners with the clips in `test-clips/`.
   built in the earlier private repository; 0.1.4 (background translation) is the first Release
   from this one, under the new application ID. Stage 2 started in 0.2.0 (player, look settings
   with live preview, timing offset, save and open `.srt`); stage 3 (the burned-in copy) in 0.3.0;
-  correcting single lines (words, timing, remove) in 0.4.0. Not yet tried on a phone: copies of
-  upright or HDR videos, how long a copy takes, and the line editing.
+  correcting single lines (words, timing, remove) in 0.4.0; carrying on after a stop in 0.5.0. Not
+  yet tried on a phone: copies of upright or HDR videos, how long a copy takes, the line editing,
+  and a real overnight stop. Proposed next: work through long videos in parts (watch the first
+  part sooner), and give the language model the lines around each group.
 - Faster transcription for long videos: large-v3 greedy for the language-model path since 0.1.6
   (about 20% faster with the same transcript on the public clips; turbo made mistakes). Speed on
   the phone not yet known.
