@@ -104,8 +104,135 @@ class SubtitlesTest {
     }
 
     @Test
+    fun webVttFromMeetingApps() {
+        val vtt = """
+            WEBVTT
+            Kind: captions
+
+            NOTE written by a meeting app
+
+            3f1c-0
+            00:00:01.000 --> 00:00:04.500 align:start position:10%
+            <v Anna Smith>Good morning &amp; welcome.</v>
+
+            3f1c-1
+            00:04.500 --> 00:07.000
+            <v Ben>Thanks,</v>
+            <c.yellow>everyone</c>.
+
+        """.trimIndent()
+        val read = SubtitleFiles.read(vtt.toByteArray())!!
+        assertEquals(SubtitleKind.WebVtt, read.kind)
+        assertEquals(false, read.canSaveBack)
+        assertEquals(
+            listOf(Segment(1000, 4500, "Good morning & welcome."), Segment(4500, 7000, "Thanks, everyone.")),
+            read.lines,
+        )
+    }
+
+    @Test
+    fun youtubeSbv() {
+        val sbv = "0:00:00.599,0:00:04.160\nHello there,\nfriends\n\n0:00:04.160,0:00:07.000\nsecond\n"
+        val read = SubtitleFiles.read(sbv.toByteArray())!!
+        assertEquals(SubtitleKind.Sbv, read.kind)
+        assertEquals(listOf(Segment(599, 4160, "Hello there, friends"), Segment(4160, 7000, "second")), read.lines)
+    }
+
+    @Test
+    fun ourOwnSrtCanBeSavedBack() {
+        val read = SubtitleFiles.read(SubtitleFiles.toSrt(listOf(Segment(0, 1000, "a"))).toByteArray())!!
+        assertEquals(SubtitleKind.Srt, read.kind)
+        assertTrue(read.canSaveBack)
+    }
+
+    @Test
+    fun transcriptWithTimesAtTheStartOfRows() {
+        val text = """
+            Weekly meeting, 3 March
+            Present: Anna, Ben
+
+            [00:00:02] Anna: Let's start.
+            0:05 - Ben: The numbers
+            are in.
+            (1:02) we met at 10:30 to go over them
+            00:01:00 an earlier time is words
+            1:10:05 - 1:10:09 A range.
+            1:10:20 back at 9:15 am
+        """.trimIndent()
+        val lines = SubtitleFiles.parseTranscript(text)!!
+        assertEquals(
+            listOf(
+                "Anna: Let's start.",
+                "Ben: The numbers are in.",
+                "we met at 10:30 to go over them 00:01:00 an earlier time is words",
+                "A range.",
+                "back at 9:15 am",
+            ),
+            lines.map { it.text },
+        )
+        assertEquals(listOf(2_000L, 5_000L, 62_000L, 4_205_000L, 4_220_000L), lines.map { it.startMs })
+        // Until the next one starts when that is soon; a range keeps its end.
+        assertEquals(5_000L, lines[0].endMs)
+        assertEquals(4_209_000L, lines[3].endMs)
+        // A short line with the next one minutes later shows long enough to read, not until then.
+        val read = lines[2].endMs - lines[2].startMs
+        assertTrue("shown for $read ms", read in 3_000L..10_000L)
+    }
+
+    @Test
+    fun transcriptWithTimesOnTheirOwnRowsOrAfterSpeakers() {
+        val copied = "0:00\nfirst words\n0:04\nsecond words\nstill second\n"
+        assertEquals(
+            listOf(Segment(0, 4000, "first words"), Segment(4000, 4000 + 700 + 80 * 25, "second words still second")),
+            SubtitleFiles.parseTranscript(copied),
+        )
+        val speakers = "Interview\n\nSpeaker 1  0:00\nHello.\n\nAnna (00:00:03):\nHi, we start at 10:30\n"
+        val lines = SubtitleFiles.parseTranscript(speakers)!!
+        assertEquals(listOf("Speaker 1: Hello.", "Anna: Hi, we start at 10:30"), lines.map { it.text })
+        assertEquals(listOf(0L, 3_000L), lines.map { it.startMs })
+        // Two rows with the same time are shown together.
+        assertEquals(listOf(Segment(1000, 3000, "a b")), SubtitleFiles.parseTranscript("0:01 a\n0:01 b\n0:03\n"))
+        assertNull(SubtitleFiles.parseTranscript("Just words.\nNo times at all, except 10:30 am.\n"))
+        assertNull(SubtitleFiles.read("Just words, no times.".toByteArray()))
+    }
+
+    @Test
+    fun savedTextOpensAgainAtItsTimes() {
+        val lines = listOf(Segment(1_500, 3_000, " Hello "), Segment(65_000, 66_000, "日本語の行"))
+        val text = SubtitleFiles.toText(lines)
+        assertEquals("[00:00:01] Hello\n[00:01:05] 日本語の行\n", text)
+        assertEquals("[00:00:03] Hello\n[00:01:07] 日本語の行\n", SubtitleFiles.toText(lines, offsetMs = 2_000))
+        val read = SubtitleFiles.read(text.toByteArray())!!
+        assertEquals(SubtitleKind.Transcript, read.kind)
+        assertEquals(listOf(1_000L, 65_000L), read.lines.map { it.startMs })
+        assertEquals(listOf("Hello", "日本語の行"), read.lines.map { it.text })
+    }
+
+    @Test
+    fun windowsUnicodeTextAndWordDocuments() {
+        val utf16 = byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + "00:00:02 Привет\r\n".toByteArray(Charsets.UTF_16LE)
+        assertEquals(listOf("Привет"), SubtitleFiles.read(utf16)!!.lines.map { it.text })
+
+        val xml = "<?xml version=\"1.0\"?><w:document><w:body>" +
+            "<w:p><w:r><w:t>Minutes</w:t></w:r></w:p>" +
+            "<w:p><w:r><w:t xml:space=\"preserve\">00:00:05 </w:t></w:r><w:r><w:t>Tom &amp; Jo</w:t></w:r></w:p>" +
+            "<w:p><w:r><w:t>agree</w:t><w:br/><w:t>00:00:09</w:t><w:tab/><w:t>Next &#x2014; item</w:t></w:r></w:p>" +
+            "</w:body></w:document>"
+        val zip = java.io.ByteArrayOutputStream()
+        java.util.zip.ZipOutputStream(zip).use { z ->
+            z.putNextEntry(java.util.zip.ZipEntry("[Content_Types].xml"))
+            z.write("<Types/>".toByteArray())
+            z.putNextEntry(java.util.zip.ZipEntry("word/document.xml"))
+            z.write(xml.toByteArray())
+        }
+        val read = SubtitleFiles.read(zip.toByteArray())!!
+        assertEquals(SubtitleKind.Transcript, read.kind)
+        assertEquals(listOf("Tom & Jo agree", "Next — item"), read.lines.map { it.text })
+        assertEquals(listOf(5_000L, 9_000L), read.lines.map { it.startMs })
+    }
+
+    @Test
     fun textAndNames() {
-        assertEquals("a\nb\n", SubtitleFiles.toText(listOf(Segment(0, 1, " a "), Segment(1, 2, "b"))))
         assertEquals("VID_1.en.srt", SubtitleFiles.suggestedName("VID_1.mp4", "srt"))
         assertEquals("subtitles.en.txt", SubtitleFiles.suggestedName(null, "txt"))
         assertEquals("00:00:00,000", SubtitleFiles.srtTime(0))

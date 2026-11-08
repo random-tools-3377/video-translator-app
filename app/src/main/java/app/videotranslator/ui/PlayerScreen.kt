@@ -102,6 +102,11 @@ fun PlayerScreen(
     onStyleChange: (SubtitleStyle) -> Unit,
     onSaveSrt: () -> Unit,
     onSaveText: () -> Unit,
+    /** Corrections (or a new timing) not yet saved, for lines opened from a file. */
+    unsaved: Boolean,
+    /** The name of the opened .srt the corrections can be saved into; null if there is none. */
+    saveChangesTo: String?,
+    onSaveChanges: () -> Unit,
     copy: CopyActions,
     onBack: () -> Unit,
 ) {
@@ -257,6 +262,9 @@ fun PlayerScreen(
                         onLines = { panel = Panel.Lines },
                         onSaveSrt = onSaveSrt,
                         onSaveText = onSaveText,
+                        unsaved = unsaved,
+                        saveChangesTo = saveChangesTo,
+                        onSaveChanges = onSaveChanges,
                         copy = copy,
                         onSaveCopy = { confirmCopy = true },
                     )
@@ -298,6 +306,8 @@ fun PlayerScreen(
                     "A new video with these subtitles burned in, looking exactly as here and with the timing " +
                         "you set, goes to your gallery in Movies/${ExportEngine.FOLDER}. Your original video is " +
                         "not changed. It takes a while for a long video; you can use other apps meanwhile.\n\n" +
+                        "The words become part of the picture and cannot be read back from the copy: to correct " +
+                        "them later, also save the subtitles (.srt).\n\n" +
                         "Like any video in your gallery, a cloud backup (Samsung Cloud, Google Photos) may upload " +
                         "the copy, subtitles included.",
                 )
@@ -323,10 +333,26 @@ private fun Controls(
     onLines: () -> Unit,
     onSaveSrt: () -> Unit,
     onSaveText: () -> Unit,
+    unsaved: Boolean,
+    saveChangesTo: String?,
+    onSaveChanges: () -> Unit,
     copy: CopyActions,
     onSaveCopy: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().heightIn(max = 380.dp).verticalScroll(rememberScrollState()).padding(16.dp)) {
+        if (saveChangesTo != null) {
+            Button(onClick = onSaveChanges) {
+                Text("Save changes in $saveChangesTo", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.height(12.dp))
+        } else if (unsaved) {
+            Text(
+                "Your corrections are not saved yet: save the subtitles (.srt) to open and correct them again later.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
         CopySection(copy, onSaveCopy)
         Spacer(Modifier.height(12.dp))
         Text("Subtitle timing: ${offsetLabel(offsetMs)}", style = MaterialTheme.typography.bodyMedium)
@@ -353,8 +379,8 @@ private fun Controls(
             TextButton(onClick = onSaveText) { Text("Save text") }
         }
         Text(
-            "$lineCount lines. Saved subtitles can be opened again later with the same video, " +
-                "without running Whisper again.",
+            "$lineCount lines. Saved subtitles (.srt) or text open again later with the same video, to " +
+                "watch and correct, without running Whisper again: \"Open saved subtitles or a transcript\".",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

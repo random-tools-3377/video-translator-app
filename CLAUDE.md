@@ -110,8 +110,10 @@ audio somewhere.
   video is two seconds late, that is one adjustment, not forty — in steps of a tenth of a second,
   checked against the playing video. And nudge one line's start and end on its own, for the line
   Whisper placed badly. Not frame-perfect; the aim is that each line shows while it is being said.
-- **Save subtitles** as `.srt` (and `.txt` for the plain text), and **open saved subtitles** for a
-  video later, so reopening a video already done does not mean running Whisper again.
+- **Save subtitles** as `.srt` (and `.txt`, the transcript with a time before each line), and
+  **open saved subtitles or a transcript** for a video later, so reopening a video already done
+  does not mean running Whisper again, and a transcript made elsewhere shows at its own times.
+  Corrections to an opened `.srt` are saved back into it.
 - **Save a copy with the subtitles burned in**, to the gallery under `Movies/Video Translator`. It
   looks exactly like the in-app preview: one style definition draws both, never two renderers that
   drift apart. Media3 Transformer with a text overlay timed per frame is the expected route. Same
@@ -177,6 +179,26 @@ audio somewhere.
   match within 1.5 s. `CarryOnTest` (emulator) checks the store round trip and a carry-on from
   9 s of ja-udhr.mp4; `vt-transcribe --self-test` checks the inverse time mapping, and
   `--from-ms`/`--language` carry on from the command line.
+- **Done in 0.6.0 (open transcripts, save corrections into the file):**
+  `SubtitleFiles.read(bytes)` opens `.srt`, WebVTT (`.vtt`: optional hours, cue settings, NOTE
+  blocks, `<v Speaker>`/`<c>` tags and inline times stripped, entities decoded), YouTube's `.sbv`,
+  and transcripts with times (`parseTranscript`): a time at the start of a row (`01:23`,
+  `[00:01:23]`, `(1:23) -`, a range `0:05 - 0:09`, or alone on its row with the words below), or,
+  only in files with fewer than two such rows, at the end of a short speaker row followed by
+  words (`Speaker 1  0:00`, `Anna (00:00:03):`, kept as an "Anna: " prefix; not if it has `,` or
+  sentence punctuation or ends with "at", "by", "until" and the like). Rows before the first time
+  are dropped; a time earlier than the one before, or followed by am/pm, is words; rows with the
+  same time are joined. A transcript line shows until the next starts, unless that is more than
+  3 s after it has been read (700 ms + 80 ms per width unit, at least 1.5 s). Plain text in UTF-8
+  or UTF-16 with a BOM, or `.docx` (`word/document.xml` from the zip, paragraphs, tabs and breaks
+  by regex; no XML library). If the first time is past the video's end (clock times in meeting
+  minutes) the lines are moved to start at 0, with a message. `toText` now writes
+  `[00:01:23] words` per line (with the offset), so a saved `.txt` opens again. A `.srt` opened
+  this way (or saved with "Save subtitles" while watching a file's lines) is the watch's `file`:
+  "Save changes in <name>" writes it back (`openOutputStream(uri, "wt")`, the picker's write
+  grant; else the save dialog), and leaving the player with unsaved corrections or timing asks
+  first. The copy dialog says the burned-in words cannot be read back, so keep the `.srt`.
+  Unit tests: `SubtitlesTest` (VTT, SBV, transcript shapes, `.txt` round trip, UTF-16, `.docx`).
 
 ### The model
 
@@ -425,7 +447,8 @@ All on GitHub's PC runners with the clips in `test-clips/`.
   built in the earlier private repository; 0.1.4 (background translation) is the first Release
   from this one, under the new application ID. Stage 2 started in 0.2.0 (player, look settings
   with live preview, timing offset, save and open `.srt`); stage 3 (the burned-in copy) in 0.3.0;
-  correcting single lines (words, timing, remove) in 0.4.0; carrying on after a stop in 0.5.0. Not
+  correcting single lines (words, timing, remove) in 0.4.0; carrying on after a stop in 0.5.0;
+  opening transcripts with times and saving corrections back into the `.srt` in 0.6.0. Not
   yet tried on a phone: copies of upright or HDR videos, how long a copy takes, the line editing,
   and a real overnight stop. Proposed next: work through long videos in parts (watch the first
   part sooner), and give the language model the lines around each group.

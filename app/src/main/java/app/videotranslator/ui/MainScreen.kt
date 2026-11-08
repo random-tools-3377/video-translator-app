@@ -153,8 +153,15 @@ private fun StartScreen(
         )
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = subtitleActions.onOpenSaved, enabled = modelState.importing == null) {
-            Text("Watch a video with subtitles you saved")
+            Text("Open saved subtitles or a transcript")
         }
+        Text(
+            "For a video already done, or one with a transcript that has times in it (.srt, .vtt, .txt, Word): " +
+                "watch it with them, correct the words, save a copy.",
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Spacer(Modifier.height(16.dp))
         LanguageModelCard(modelState, actions)
         Spacer(Modifier.height(16.dp))
@@ -313,7 +320,7 @@ private fun JobScreen(
             }
             if (!working) {
                 // Also here, not only on the first screen: after a translation the app stays on this one.
-                TextButton(onClick = subtitleActions.onOpenSaved) { Text("Watch a video with subtitles you saved") }
+                TextButton(onClick = subtitleActions.onOpenSaved) { Text("Open saved subtitles or a transcript") }
                 TextButton(onClick = { confirmClose = true }) { Text("Close this result") }
             }
         }

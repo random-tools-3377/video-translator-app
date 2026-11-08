@@ -238,7 +238,8 @@ object TranslationEngine {
         }
     }
 
-    private fun durationOf(app: Context, uri: Uri): Long? = try {
+    /** The video's length from its metadata; null if it cannot be read. */
+    fun durationOf(app: Context, uri: Uri): Long? = try {
         val r = MediaMetadataRetriever()
         try {
             r.setDataSource(app, uri)

@@ -14,6 +14,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -25,6 +28,7 @@ import app.videotranslator.engine.TranslationEngine
 import app.videotranslator.export.ExportEngine
 import app.videotranslator.llm.LanguageModels
 import app.videotranslator.subtitles.SubtitleFiles
+import app.videotranslator.subtitles.SubtitleKind
 import app.videotranslator.subtitles.SubtitleStyleStore
 import app.videotranslator.ui.AppTheme
 import app.videotranslator.ui.BusyDialog
@@ -42,7 +46,19 @@ import app.videotranslator.whisper.Segment
  * A video playing with its subtitles: the lines just worked out ([fromJob]: they live in
  * TranslationEngine, so a correction shows on the results screen too), or opened from a file.
  */
-private data class Watch(val uri: Uri, val title: String?, val lines: List<Segment>, val fromJob: Boolean = false)
+private data class Watch(
+    val uri: Uri,
+    val title: String?,
+    val lines: List<Segment>,
+    val fromJob: Boolean = false,
+    /** The .srt the lines came from (or were last saved to), which corrections can be saved into. */
+    val file: Uri? = null,
+    val fileName: String? = null,
+    /** Corrections made since the lines were opened or last saved. */
+    val changed: Boolean = false,
+    /** The "all earlier/later" setting the lines were last saved with. */
+    val savedOffsetMs: Long = 0,
+)
 
 class MainActivity : ComponentActivity() {
 
@@ -60,6 +76,15 @@ class MainActivity : ComponentActivity() {
 
     /** What the system save dialog will write once the user has chosen where. */
     private var pendingSave: String? = null
+
+    /** The save dialog is for the watched file's lines as a .srt, which can be saved into again. */
+    private var pendingIsSrt = false
+
+    /** Leave the player once the save dialog has saved (the user chose Save on the way out). */
+    private var leaveAfterSave = false
+
+    /** The user is leaving the player with corrections not yet saved: ask first. */
+    private var confirmLeave by mutableStateOf(false)
 
     /** The video picked for "watch with saved subtitles", while its subtitle file is picked. */
     private var subtitlesFor: Uri? = null
@@ -108,7 +133,20 @@ class MainActivity : ComponentActivity() {
 
                 // Subtitles go only where the user chooses, through the system save dialog.
                 val saveSrt = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-subrip")) { uri ->
-                    if (uri != null) writePending(uri) else pendingSave = null
+                    val adopt = pendingIsSrt
+                    pendingIsSrt = false
+                    val leave = leaveAfterSave
+                    leaveAfterSave = false
+                    if (uri == null) {
+                        pendingSave = null
+                    } else if (writePending(uri)) {
+                        // Corrections to a file's lines can now be saved into this one.
+                        val w = watch
+                        if (adopt && w != null && !w.fromJob) {
+                            watch = w.copy(file = uri, fileName = displayName(uri), changed = false, savedOffsetMs = offsetMs)
+                        }
+                        if (leave) watch = null
+                    }
                 }
                 val saveText = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
                     if (uri != null) writePending(uri) else pendingSave = null
@@ -121,7 +159,11 @@ class MainActivity : ComponentActivity() {
                 val pickForSubtitles = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
                     if (uri != null) {
                         subtitlesFor = uri
-                        Toast.makeText(this@MainActivity, "Now pick the subtitle file (.srt) you saved for it.", Toast.LENGTH_LONG).show()
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Now pick its subtitles (.srt) or a transcript with times (.txt, .vtt, Word).",
+                            Toast.LENGTH_LONG,
+                        ).show()
                         openSubtitles.launch(arrayOf("*/*"))
                     }
                 }
@@ -135,10 +177,11 @@ class MainActivity : ComponentActivity() {
                     },
                     onSaveSrt = {
                         pendingSave = SubtitleFiles.toSrt(lines, offsetMs)
+                        pendingIsSrt = watching != null && !watching.fromJob
                         saveSrt.launch(SubtitleFiles.suggestedName(name, "srt"))
                     },
                     onSaveText = {
-                        pendingSave = SubtitleFiles.toText(lines)
+                        pendingSave = SubtitleFiles.toText(lines, offsetMs)
                         saveText.launch(SubtitleFiles.suggestedName(name, "txt"))
                     },
                     onOpenSaved = {
@@ -146,13 +189,38 @@ class MainActivity : ComponentActivity() {
                     },
                     onEditLine = { i, line ->
                         val w = watch
-                        if (w == null || w.fromJob) TranslationEngine.editLine(i, line) else watch = w.copy(lines = w.lines.withLine(i, line))
+                        if (w == null || w.fromJob) {
+                            TranslationEngine.editLine(i, line)
+                        } else {
+                            watch = w.copy(lines = w.lines.withLine(i, line), changed = true)
+                        }
                     },
                     onRemoveLine = { i ->
                         val w = watch
-                        if (w == null || w.fromJob) TranslationEngine.removeLine(i) else watch = w.copy(lines = w.lines.withoutLine(i))
+                        if (w == null || w.fromJob) {
+                            TranslationEngine.removeLine(i)
+                        } else {
+                            watch = w.copy(lines = w.lines.withoutLine(i), changed = true)
+                        }
                     },
                 )
+                // Corrections to lines opened from a file live only in memory until saved.
+                val unsaved = watching != null && !watching.fromJob && (watching.changed || offsetMs != watching.savedOffsetMs)
+                val saveAsSrt = {
+                    pendingSave = SubtitleFiles.toSrt(lines, offsetMs)
+                    pendingIsSrt = true
+                    saveSrt.launch(SubtitleFiles.suggestedName(name, "srt"))
+                }
+                // Saves into the opened .srt; without one (a transcript), or if that fails, asks where.
+                fun saveChanges(thenLeave: Boolean) {
+                    val w = watch ?: return
+                    if (w.file != null && saveInto(w.file, SubtitleFiles.toSrt(w.lines, offsetMs), w.fileName)) {
+                        watch = if (thenLeave) null else w.copy(changed = false, savedOffsetMs = offsetMs)
+                    } else {
+                        leaveAfterSave = thenLeave
+                        saveAsSrt()
+                    }
+                }
 
                 LaunchedEffect(state.phase, queued) {
                     val next = queued
@@ -177,6 +245,9 @@ class MainActivity : ComponentActivity() {
                         onStyleChange = { SubtitleStyleStore.set(this@MainActivity, it) },
                         onSaveSrt = subtitleActions.onSaveSrt,
                         onSaveText = subtitleActions.onSaveText,
+                        unsaved = unsaved,
+                        saveChangesTo = if (unsaved && watching.file != null) watching.fileName ?: "the subtitle file" else null,
+                        onSaveChanges = { saveChanges(thenLeave = false) },
                         copy = CopyActions(
                             state = exportState,
                             onSave = {
@@ -187,8 +258,36 @@ class MainActivity : ComponentActivity() {
                             onOpen = { uri -> openVideo(uri) },
                             onDismiss = { ExportEngine.clear() },
                         ),
-                        onBack = { watch = null },
+                        onBack = { if (unsaved) confirmLeave = true else watch = null },
                     )
+                    if (confirmLeave) {
+                        AlertDialog(
+                            onDismissRequest = { confirmLeave = false },
+                            title = { Text("Save your corrections?") },
+                            text = {
+                                Text(
+                                    if (watching.file != null) {
+                                        "Your corrections are not saved in ${watching.fileName ?: "the subtitle file"} yet."
+                                    } else {
+                                        "Your corrections are not saved yet. Save them as a subtitle file (.srt) to open " +
+                                            "and correct again later."
+                                    },
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    confirmLeave = false
+                                    saveChanges(thenLeave = true)
+                                }) { Text("Save") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = {
+                                    confirmLeave = false
+                                    watch = null
+                                }) { Text("Don't save") }
+                            },
+                        )
+                    }
                 } else {
                     MainScreen(
                         state = state,
@@ -307,37 +406,65 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Writes what the save dialog was opened for to the place the user chose. */
-    private fun writePending(uri: Uri) {
-        val text = pendingSave ?: return
+    private fun writePending(uri: Uri): Boolean {
+        val text = pendingSave ?: return false
         pendingSave = null
-        try {
-            val out = contentResolver.openOutputStream(uri, "wt") ?: throw java.io.IOException("no file")
-            out.use { it.write(text.toByteArray(Charsets.UTF_8)) }
-            Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Could not save: ${e.message}", Toast.LENGTH_LONG).show()
-        }
+        return saveInto(uri, text, null)
     }
 
-    /** Plays [video] with the subtitles in the file [subtitles] (a .srt), read once into memory. */
+    /** Writes [text] into the file [uri] (replacing what was in it). False if it could not. */
+    private fun saveInto(uri: Uri, text: String, name: String?): Boolean = try {
+        val out = contentResolver.openOutputStream(uri, "wt") ?: throw java.io.IOException("no file")
+        out.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+        Toast.makeText(this, if (name != null) "Saved in $name." else "Saved.", Toast.LENGTH_SHORT).show()
+        true
+    } catch (e: Exception) {
+        Toast.makeText(this, "Could not save: ${e.message}", Toast.LENGTH_LONG).show()
+        false
+    }
+
+    /**
+     * Plays [video] with the lines in [subtitles]: a subtitle file or a transcript with times,
+     * read once into memory. Corrections can be saved back into a .srt.
+     */
     private fun openSaved(video: Uri, subtitles: Uri) {
-        val lines = try {
-            contentResolver.openInputStream(subtitles)?.use { input ->
-                SubtitleFiles.parseSrt(String(input.readNBytes(MAX_SUBTITLE_BYTES), Charsets.UTF_8))
-            }
+        val opened = try {
+            contentResolver.openInputStream(subtitles)?.use { input -> SubtitleFiles.read(input.readNBytes(MAX_SUBTITLE_BYTES)) }
         } catch (e: Exception) {
             null
         }
-        if (lines == null) {
+        if (opened == null) {
             Toast.makeText(
                 this,
-                "No subtitles could be read from that file. Pick a .srt file, such as one saved by this app.",
+                "No times were found in that file, so the app cannot tell when each line is said. It opens subtitles " +
+                    "(.srt, .vtt) and transcripts with a time at each line or paragraph, like 01:23 or [00:01:23].",
                 Toast.LENGTH_LONG,
             ).show()
             return
         }
+        var lines = opened.lines
+        // Times past the end of the video are clock times (a meeting's "10:00"): start at 0 instead.
+        val duration = TranslationEngine.durationOf(this, video)
+        val first = lines.first().startMs
+        if (duration != null && duration > 0 && first >= duration) {
+            lines = lines.map { it.copy(startMs = it.startMs - first, endMs = it.endMs - first) }
+            Toast.makeText(
+                this,
+                "The times in that file start after the end of the video (${SubtitleFiles.clock(first)}), so they look " +
+                    "like clock times: the first line now starts with the video. Use Subtitle timing to move them all.",
+                Toast.LENGTH_LONG,
+            ).show()
+        } else if (opened.kind == SubtitleKind.Transcript) {
+            Toast.makeText(this, "${lines.size} lines placed at the times in the transcript.", Toast.LENGTH_SHORT).show()
+        }
         offsetMs = 0
-        watch = Watch(video, displayName(video), lines)
+        watch = Watch(
+            video,
+            displayName(video),
+            lines,
+            file = if (opened.canSaveBack) subtitles else null,
+            fileName = if (opened.canSaveBack) displayName(subtitles) else null,
+        )
     }
 
     private fun displayName(uri: Uri): String? = try {
@@ -349,6 +476,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
-        const val MAX_SUBTITLE_BYTES = 8 shl 20
+        // A Word document with pictures in it can be large; its text is a small part.
+        const val MAX_SUBTITLE_BYTES = 64 shl 20
     }
 }
