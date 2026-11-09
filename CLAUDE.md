@@ -199,6 +199,21 @@ audio somewhere.
   grant; else the save dialog), and leaving the player with unsaved corrections or timing asks
   first. The copy dialog says the burned-in words cannot be read back, so keep the `.srt`.
   Unit tests: `SubtitlesTest` (VTT, SBV, transcript shapes, `.txt` round trip, UTF-16, `.docx`).
+- **Done in 0.6.1 (subtitle files from outside the app):** Android had no app to open a `.srt`
+  tapped in My Files. `MainActivity` now takes `VIEW` and `SEND` of subtitle types
+  (`application/x-subrip`, `text/x-subrip`, `application/x-srt`, `text/srt`, `text/vtt`,
+  `text/x-vtt`) and `VIEW` of `content:` files named `*.srt`/`*.vtt`/`*.sbv` given as
+  `text/plain` or `application/octet-stream` (`pathSuffix`, API 31+; not every `.txt`).
+  `handleIncoming` reads the file once into memory (`readSubtitles`) and holds it as `loaded`:
+  a "Subtitles ready" dialog offers "Pick the video" (Photo Picker) or sharing the video from
+  Gallery, which then plays with them (`singleTask`, so the share reaches the same activity). The
+  in-app "Open saved subtitles or a transcript" now picks the file first, then the video. A
+  video shared with nothing loaded asks "Translate it" or "Add subtitles" (pick the file) instead
+  of starting a translation at once, saying when a translation would replace the kept result.
+  "Save changes" into the file only when the app holds a write grant for it
+  (`checkCallingOrSelfUriPermission`; a file manager's `VIEW` is usually read-only), else Save
+  subtitles writes a new `.srt` that later saves go into. `OpenSubtitleFileTest` (emulator)
+  checks which intents resolve to the app.
 
 ### The model
 
@@ -448,7 +463,8 @@ All on GitHub's PC runners with the clips in `test-clips/`.
   from this one, under the new application ID. Stage 2 started in 0.2.0 (player, look settings
   with live preview, timing offset, save and open `.srt`); stage 3 (the burned-in copy) in 0.3.0;
   correcting single lines (words, timing, remove) in 0.4.0; carrying on after a stop in 0.5.0;
-  opening transcripts with times and saving corrections back into the `.srt` in 0.6.0. Not
+  opening transcripts with times and saving corrections back into the `.srt` in 0.6.0; opening
+  a `.srt` from My Files or Share and pairing it with a picked or shared video in 0.6.1. Not
   yet tried on a phone: copies of upright or HDR videos, how long a copy takes, the line editing,
   and a real overnight stop. Proposed next: work through long videos in parts (watch the first
   part sooner), and give the language model the lines around each group.

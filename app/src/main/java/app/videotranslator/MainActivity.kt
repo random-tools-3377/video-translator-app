@@ -27,6 +27,7 @@ import app.videotranslator.engine.Phase
 import app.videotranslator.engine.TranslationEngine
 import app.videotranslator.export.ExportEngine
 import app.videotranslator.llm.LanguageModels
+import app.videotranslator.subtitles.OpenedSubtitles
 import app.videotranslator.subtitles.SubtitleFiles
 import app.videotranslator.subtitles.SubtitleKind
 import app.videotranslator.subtitles.SubtitleStyleStore
@@ -60,7 +61,19 @@ private data class Watch(
     val savedOffsetMs: Long = 0,
 )
 
+/** Subtitles read from a file the user picked, opened or shared, and the file itself. */
+private data class LoadedSubtitles(val opened: OpenedSubtitles, val uri: Uri, val name: String?)
+
+/** A video shared to the app, waiting for the user to say what to do with it. */
+private data class SharedVideo(val uri: Uri, val name: String?)
+
 class MainActivity : ComponentActivity() {
+
+    /** Subtitles waiting for the video they belong to (picked, or shared from Gallery). */
+    private var loaded by mutableStateOf<LoadedSubtitles?>(null)
+
+    /** A shared video: translate it, or add subtitles the user already has? */
+    private var shared by mutableStateOf<SharedVideo?>(null)
 
     /** A video that arrived while another was being translated, waiting for the user's answer. */
     private var waiting by mutableStateOf<Uri?>(null)
@@ -104,7 +117,7 @@ class MainActivity : ComponentActivity() {
         // A translation kept from before the app was closed: finished, or to carry on.
         TranslationEngine.restore(this)
         ExportEngine.removeLeftovers(this)
-        if (savedInstanceState == null) handleShare(intent)
+        if (savedInstanceState == null) handleIncoming(intent)
 
         setContent {
             AppTheme {
@@ -151,20 +164,21 @@ class MainActivity : ComponentActivity() {
                 val saveText = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
                     if (uri != null) writePending(uri) else pendingSave = null
                 }
+                // Subtitles for a video already chosen (a shared one).
                 val openSubtitles = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
                     val video = subtitlesFor
                     subtitlesFor = null
-                    if (uri != null && video != null) openSaved(video, uri)
+                    if (uri != null && video != null) readSubtitles(uri)?.let { watchWith(video, it) }
                 }
-                val pickForSubtitles = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-                    if (uri != null) {
-                        subtitlesFor = uri
-                        Toast.makeText(
-                            this@MainActivity,
-                            "Now pick its subtitles (.srt) or a transcript with times (.txt, .vtt, Word).",
-                            Toast.LENGTH_LONG,
-                        ).show()
-                        openSubtitles.launch(arrayOf("*/*"))
+                // Subtitles first ("Open saved subtitles"), then the video they belong to.
+                val loadSubtitles = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                    if (uri != null) readSubtitles(uri)?.let { loaded = it }
+                }
+                val videoForLoaded = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+                    val subs = loaded
+                    if (uri != null && subs != null) {
+                        loaded = null
+                        watchWith(uri, subs)
                     }
                 }
                 // The lines being watched: the job's own (corrections go back to it) or a file's.
@@ -184,9 +198,7 @@ class MainActivity : ComponentActivity() {
                         pendingSave = SubtitleFiles.toText(lines, offsetMs)
                         saveText.launch(SubtitleFiles.suggestedName(name, "txt"))
                     },
-                    onOpenSaved = {
-                        pickForSubtitles.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
-                    },
+                    onOpenSaved = { loadSubtitles.launch(arrayOf("*/*")) },
                     onEditLine = { i, line ->
                         val w = watch
                         if (w == null || w.fromJob) {
@@ -319,6 +331,59 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
+                loaded?.let { subs ->
+                    AlertDialog(
+                        // Stays until the video is chosen or the user forgets them: the video may be
+                        // shared from Gallery meanwhile.
+                        onDismissRequest = { },
+                        title = { Text("Subtitles ready") },
+                        text = {
+                            Text(
+                                "${subs.name ?: "The file"}: ${subs.opened.lines.size} lines. Now pick the video they " +
+                                    "belong to, or share it to Video Translator from Gallery.",
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                videoForLoaded.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+                            }) { Text("Pick the video") }
+                        },
+                        dismissButton = { TextButton(onClick = { loaded = null }) { Text("Forget them") } },
+                    )
+                }
+
+                shared?.let { video ->
+                    AlertDialog(
+                        onDismissRequest = { shared = null },
+                        title = { Text(video.name ?: "This video") },
+                        text = {
+                            Text(
+                                "Translate it, or watch it with subtitles you already have (a .srt file or a " +
+                                    "transcript with times)?" +
+                                    if (state.phase != Phase.Idle && state.phase != Phase.Working) {
+                                        "\n\nTranslating it replaces the translation the app has now; save its " +
+                                            "subtitles first to keep them."
+                                    } else {
+                                        ""
+                                    },
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                shared = null
+                                request(video.uri)
+                            }) { Text("Translate it") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = {
+                                shared = null
+                                subtitlesFor = video.uri
+                                openSubtitles.launch(arrayOf("*/*"))
+                            }) { Text("Add subtitles") }
+                        },
+                    )
+                }
+
                 waiting?.let { uri ->
                     BusyDialog(
                         currentName = state.videoName,
@@ -337,18 +402,37 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleShare(intent)
+        handleIncoming(intent)
     }
 
-    /** A video shared from Samsung Gallery (or any app): one item, read once, never copied. */
-    private fun handleShare(intent: Intent?) {
-        if (intent?.action != Intent.ACTION_SEND) return
-        val type = intent.type ?: return
-        if (!type.startsWith("video/")) return
-        val uri = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-            ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
-            ?: return
-        request(uri)
+    /**
+     * One item handed to the app: a video shared from Samsung Gallery (or any app), or a subtitle
+     * file opened from My Files or shared. Videos are never copied; subtitles are read once into
+     * memory.
+     */
+    private fun handleIncoming(intent: Intent?) {
+        if (intent == null) return
+        val action = intent.action
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_VIEW) return
+        val uri = if (action == Intent.ACTION_VIEW) {
+            intent.data
+        } else {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+        } ?: return
+        val type = intent.type ?: (try { contentResolver.getType(uri) } catch (_: Exception) { null }) ?: ""
+        if (type.startsWith("video/")) videoArrived(uri) else readSubtitles(uri)?.let { loaded = it }
+    }
+
+    /** A shared video: with subtitles waiting, it plays with them; else the user chooses. */
+    private fun videoArrived(uri: Uri) {
+        val subs = loaded
+        if (subs != null) {
+            loaded = null
+            watchWith(uri, subs)
+        } else {
+            shared = SharedVideo(uri, displayName(uri))
+        }
     }
 
     /**
@@ -423,13 +507,10 @@ class MainActivity : ComponentActivity() {
         false
     }
 
-    /**
-     * Plays [video] with the lines in [subtitles]: a subtitle file or a transcript with times,
-     * read once into memory. Corrections can be saved back into a .srt.
-     */
-    private fun openSaved(video: Uri, subtitles: Uri) {
+    /** Reads a subtitle file or a transcript with times once into memory; null (and says why) if it cannot. */
+    private fun readSubtitles(uri: Uri): LoadedSubtitles? {
         val opened = try {
-            contentResolver.openInputStream(subtitles)?.use { input -> SubtitleFiles.read(input.readNBytes(MAX_SUBTITLE_BYTES)) }
+            contentResolver.openInputStream(uri)?.use { input -> SubtitleFiles.read(input.readNBytes(MAX_SUBTITLE_BYTES)) }
         } catch (e: Exception) {
             null
         }
@@ -440,8 +521,14 @@ class MainActivity : ComponentActivity() {
                     "(.srt, .vtt) and transcripts with a time at each line or paragraph, like 01:23 or [00:01:23].",
                 Toast.LENGTH_LONG,
             ).show()
-            return
+            return null
         }
+        return LoadedSubtitles(opened, uri, displayName(uri))
+    }
+
+    /** Plays [video] with [subs]. Corrections can be saved back into a .srt the app may write to. */
+    private fun watchWith(video: Uri, subs: LoadedSubtitles) {
+        val opened = subs.opened
         var lines = opened.lines
         // Times past the end of the video are clock times (a meeting's "10:00"): start at 0 instead.
         val duration = TranslationEngine.durationOf(this, video)
@@ -458,12 +545,16 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "${lines.size} lines placed at the times in the transcript.", Toast.LENGTH_SHORT).show()
         }
         offsetMs = 0
+        // A file picked in the app can usually be written to; one opened from a file manager may
+        // only be readable, and then corrections are saved as a new .srt (Save subtitles).
+        val writable = opened.canSaveBack &&
+            checkCallingOrSelfUriPermission(subs.uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION) == PackageManager.PERMISSION_GRANTED
         watch = Watch(
             video,
             displayName(video),
             lines,
-            file = if (opened.canSaveBack) subtitles else null,
-            fileName = if (opened.canSaveBack) displayName(subtitles) else null,
+            file = if (writable) subs.uri else null,
+            fileName = if (writable) subs.name else null,
         )
     }
 

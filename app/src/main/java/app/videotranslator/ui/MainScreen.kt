@@ -156,8 +156,9 @@ private fun StartScreen(
             Text("Open saved subtitles or a transcript")
         }
         Text(
-            "For a video already done, or one with a transcript that has times in it (.srt, .vtt, .txt, Word): " +
-                "watch it with them, correct the words, save a copy.",
+            "Pick the subtitles (.srt) or a transcript with times (.vtt, .txt, Word), then the video they " +
+                "belong to: watch, correct the words, save a copy. A .srt can also be opened from My Files or " +
+                "shared to Video Translator, and then the video shared from Gallery.",
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

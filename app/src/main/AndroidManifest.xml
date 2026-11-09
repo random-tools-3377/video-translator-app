@@ -47,6 +47,31 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="video/*" />
             </intent-filter>
+            <!-- Open (from My Files) or share a subtitle file to Video Translator; then the video
+                 it belongs to is picked or shared, and plays with it. Read once, never copied. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/x-subrip" />
+                <data android:mimeType="text/x-subrip" />
+                <data android:mimeType="application/x-srt" />
+                <data android:mimeType="text/srt" />
+                <data android:mimeType="text/vtt" />
+                <data android:mimeType="text/x-vtt" />
+            </intent-filter>
+            <!-- File managers that call a .srt plain text or a file of unknown type: by its name. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:host="*" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:pathSuffix=".srt" />
+                <data android:pathSuffix=".vtt" />
+                <data android:pathSuffix=".sbv" />
+            </intent-filter>
         </activity>
 
         <!-- mediaProcessing on Android 15+, dataSync before (TranslationService picks). -->

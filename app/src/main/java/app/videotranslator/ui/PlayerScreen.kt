@@ -380,7 +380,8 @@ private fun Controls(
         }
         Text(
             "$lineCount lines. Saved subtitles (.srt) or text open again later with the same video, to " +
-                "watch and correct, without running Whisper again: \"Open saved subtitles or a transcript\".",
+                "watch and correct, without running Whisper again: \"Open saved subtitles or a transcript\", " +
+                "or open the .srt from My Files.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
